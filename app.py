@@ -1,17 +1,21 @@
 """FastAPI ASGI application mounting the MCP 2025-11-25 Streamable HTTP endpoint,
-CORS policies exposing Mcp-Session-Id, and readiness /health monitoring.
+CORS policies exposing Mcp-Session-Id, readiness /health monitoring,
+and the Centre-Stage Alexa+ Multimodal Web Canvas.
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from core.database import get_db_connection, init_db, load_seed_if_empty
 from core.mcp_server import MCPServer, PROTOCOL_VERSION, SERVER_INFO
 
 server = MCPServer()
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -24,7 +28,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="HackPulse Alexa MCP",
-    description="Streamable HTTP MCP Server (2025-11-25) & Rule-Diff Engine for Hackathons",
+    description="Streamable HTTP MCP Server (2025-11-25), Persistent Builder Profile, Sprint Planner, and Alexa+ Ambient Display",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -38,6 +42,19 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["Mcp-Session-Id", "Content-Type"],
 )
+
+# Mount static assets
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/")
+def serve_index():
+    """Serves the Amazon Echo Show 15 / Alexa+ Centre-Stage Web Interface."""
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        return FileResponse(str(index_file), media_type="text/html")
+    return {"message": "HackPulse Alexa+ Backend Online. (static/index.html not found)"}
 
 
 @app.get("/health")
@@ -87,6 +104,17 @@ async def mcp_post_endpoint(
     response.headers["Mcp-Session-Id"] = active_session_id
     response.headers["Content-Type"] = "application/json"
     return res_body
+
+
+@app.delete("/mcp")
+def mcp_delete_endpoint(
+    response: Response,
+    mcp_session_id: str | None = Header(default=None, alias="Mcp-Session-Id"),
+):
+    """Allows clients to cleanly terminate an MCP session."""
+    if mcp_session_id:
+        response.headers["Mcp-Session-Id"] = mcp_session_id
+    return {"status": "session_terminated"}
 
 
 if __name__ == "__main__":

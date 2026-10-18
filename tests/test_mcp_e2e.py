@@ -1,6 +1,7 @@
 """Automated End-to-End Verification of HackPulse Alexa MCP Server.
-Verifies MCP 2025-11-25 handshake, Mcp-Session-Id generation, all 5 core tools,
-rule-audit provenance, resources, prompts, and health monitoring.
+Verifies MCP 2025-11-25 handshake, Mcp-Session-Id generation, all core tools,
+structuredContent, persistent builder profile, calibrated sprint planning,
+rule-audit provenance, resources, prompts, and the Centre-Stage Alexa+ multimodal web UI.
 """
 
 import json
@@ -87,12 +88,15 @@ def test_mcp_tools_list_has_five_core_tools():
     tools = response.json()["result"]["tools"]
 
     tool_names = [t["name"] for t in tools]
-    assert len(tool_names) == 5
+    assert len(tool_names) >= 5
     assert "search_hackathons" in tool_names
     assert "get_hackathon_details" in tool_names
     assert "sync_upstream_catalog" in tool_names
     assert "audit_rules" in tool_names
     assert "diff_rules" in tool_names
+    # Also verify new profile and sprint tools
+    assert "generate_sprint_plan" in tool_names
+    assert "manage_builder_profile" in tool_names
 
 
 def test_tool_search_hackathons():
@@ -278,3 +282,140 @@ def test_mcp_prompts():
     }
     g_res = client.post("/mcp", json=get_payload).json()
     assert "messages" in g_res["result"]
+
+
+# -----------------------------------------------------------------------------
+# New Tests: Builder Profile, Feasibility Scoring, Sprint Planner, Web UI
+# -----------------------------------------------------------------------------
+def test_tool_manage_builder_profile():
+    # 1. Get default profile
+    get_payload = {
+        "jsonrpc": "2.0",
+        "id": 16,
+        "method": "tools/call",
+        "params": {
+            "name": "manage_builder_profile",
+            "arguments": {"action": "get"},
+        },
+    }
+    res = client.post("/mcp", json=get_payload).json()
+    prof = json.loads(res["result"]["content"][0]["text"])
+    assert prof["profile_id"] == "default"
+    assert prof["country"] == "India"
+    assert prof["hours_per_week"] == 15
+    assert prof["budget_inr"] == 0.0
+
+    # 2. Update hours and toggle a bookmark
+    test_bm = "test_hackathon_bookmark_123"
+    update_payload = {
+        "jsonrpc": "2.0",
+        "id": 17,
+        "method": "tools/call",
+        "params": {
+            "name": "manage_builder_profile",
+            "arguments": {
+                "action": "update",
+                "hours_per_week": 20,
+                "toggle_bookmark_id": test_bm,
+            },
+        },
+    }
+    u_res = client.post("/mcp", json=update_payload).json()
+    u_prof = json.loads(u_res["result"]["content"][0]["text"])
+    assert u_prof["hours_per_week"] == 20
+    assert test_bm in u_prof["bookmarks"]
+
+    # 3. Untoggle bookmark
+    untoggle_payload = {
+        "jsonrpc": "2.0",
+        "id": 18,
+        "method": "tools/call",
+        "params": {
+            "name": "manage_builder_profile",
+            "arguments": {"action": "update", "toggle_bookmark_id": test_bm, "hours_per_week": 15},
+        },
+    }
+    un_res = client.post("/mcp", json=untoggle_payload).json()
+    un_prof = json.loads(un_res["result"]["content"][0]["text"])
+    assert test_bm not in un_prof["bookmarks"]
+    assert un_prof["hours_per_week"] == 15
+
+
+def test_tool_search_hackathons_feasibility_and_structured_content():
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 19,
+        "method": "tools/call",
+        "params": {
+            "name": "search_hackathons",
+            "arguments": {"sort_by_feasibility": True, "limit": 3},
+        },
+    }
+    response = client.post("/mcp", json=payload)
+    res_json = response.json()
+
+    # Check structuredContent
+    assert "structuredContent" in res_json["result"]
+    sc = res_json["result"]["structuredContent"]
+    assert sc["stageView"] == "CAROUSEL"
+    assert "voiceSummary" in sc
+    assert len(sc["voiceSummary"]) > 10
+
+    # Check feasibility scoring on items
+    items = sc["data"]["hackathons"]
+    assert len(items) > 0
+    top = items[0]
+    assert "feasibility_score" in top
+    assert 0 <= top["feasibility_score"] <= 100
+    assert "score_breakdown" in top
+    assert "fit_reasons" in top
+    assert "is_bookmarked" in top
+
+
+def test_tool_generate_sprint_plan_and_toggle():
+    h_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+
+    # 1. Initial plan creation
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 20,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_sprint_plan",
+            "arguments": {"hackathon_id": h_id, "available_hours": 15},
+        },
+    }
+    response = client.post("/mcp", json=payload)
+    res = response.json()
+    plan = res["result"]["structuredContent"]["data"]
+    assert plan["hackathon_id"] == h_id
+    assert plan["total_hours"] == 15
+    assert len(plan["milestones"]) == 5
+    assert "Hour 6" in plan["go_no_go_checkpoint"]
+    assert "reuse" in plan["reuse_compliance_note"].lower()
+
+    # 2. Toggle milestone M3 (Centre-Stage Multimodal UI)
+    toggle_payload = {
+        "jsonrpc": "2.0",
+        "id": 21,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_sprint_plan",
+            "arguments": {"hackathon_id": h_id, "completed_milestone_id": "M3"},
+        },
+    }
+    t_res = client.post("/mcp", json=toggle_payload).json()
+    t_plan = t_res["result"]["structuredContent"]["data"]
+    m3 = next(m for m in t_plan["milestones"] if m["id"] == "M3")
+    assert m3["completed"] is True
+    assert t_plan["completed_milestones"] == 3
+
+
+def test_web_app_index_serves_alexa_multimodal():
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "text/html" in response.headers.get("content-type", "")
+    html_text = response.text
+    assert "HackPulse Alexa+" in html_text
+    assert "Opportunity Deck" in html_text
+    assert "Wire Inspector" in html_text

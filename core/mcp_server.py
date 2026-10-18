@@ -1,6 +1,6 @@
 """MCP 2025-11-25 Streamable HTTP Protocol Handler.
 Supports JSON-RPC 2.0 initialization, session management,
-the 5 core HackPulse tools, resources, and prompt templates.
+the 7 core HackPulse tools, structuredContent stage views, resources, and prompt templates.
 """
 
 import json
@@ -11,11 +11,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from core.database import (
+    generate_or_update_sprint_plan,
+    get_builder_profile,
     get_hackathon,
     load_seed_if_empty,
     query_hackathons,
     record_session,
     sync_upstream_json,
+    update_builder_profile,
 )
 from core.rule_auditor import RuleAuditor
 
@@ -32,14 +35,14 @@ class MCPServer:
         self.auditor = RuleAuditor(db_path=db_path)
 
     # -------------------------------------------------------------------------
-    # Core Tools Definition (5 Core MCP Tools)
+    # Core Tools Definition (7 Tools)
     # -------------------------------------------------------------------------
     @staticmethod
     def get_tool_definitions() -> List[Dict[str, Any]]:
         return [
             {
                 "name": "search_hackathons",
-                "description": "Search and filter the hackathon catalog by keyword, source, status, location/format, and tags.",
+                "description": "Search and filter the hackathon catalog by keyword, source, status, location/format, and tags, enriched with profile feasibility score.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -62,6 +65,11 @@ class MCPServer:
                         "tag": {
                             "type": "string",
                             "description": "Specific topic tag filter, e.g. 'ai', 'cloud', 'blockchain'.",
+                        },
+                        "sort_by_feasibility": {
+                            "type": "boolean",
+                            "description": "If true, sorts results descending by feasibility score for the active profile.",
+                            "default": False,
                         },
                         "limit": {
                             "type": "integer",
@@ -140,6 +148,64 @@ class MCPServer:
                     "required": ["identifier"],
                 },
             },
+            {
+                "name": "generate_sprint_plan",
+                "description": "Generate or update a persistent 15-hour time-boxed sprint plan calibrated to the builder profile with Go/No-Go checkpoint and milestone toggles.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "hackathon_id": {
+                            "type": "string",
+                            "description": "Target hackathon ID or fingerprint.",
+                        },
+                        "available_hours": {
+                            "type": "integer",
+                            "description": "Weekly available builder hours (default 15).",
+                            "default": 15,
+                        },
+                        "completed_milestone_id": {
+                            "type": "string",
+                            "description": "Optional milestone ID (M1-M5) to toggle completion status.",
+                        },
+                    },
+                    "required": ["hackathon_id"],
+                },
+            },
+            {
+                "name": "manage_builder_profile",
+                "description": "Retrieve or update the persistent cross-session builder profile, budget, hours, skills, and bookmark toggles.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "description": "Action to perform: 'get' or 'update'.",
+                            "default": "get",
+                        },
+                        "hours_per_week": {
+                            "type": "integer",
+                            "description": "Weekly available hours.",
+                        },
+                        "budget_inr": {
+                            "type": "number",
+                            "description": "Available budget in INR.",
+                        },
+                        "prefer_online_only": {
+                            "type": "boolean",
+                            "description": "Preference for online-only hackathons.",
+                        },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Builder technical skills.",
+                        },
+                        "toggle_bookmark_id": {
+                            "type": "string",
+                            "description": "Hackathon ID to toggle in bookmarks list.",
+                        },
+                    },
+                },
+            },
         ]
 
     # -------------------------------------------------------------------------
@@ -159,6 +225,12 @@ class MCPServer:
                 "name": "Rule Provenance Schema",
                 "description": "Specification of rule audit verification statuses and provenance fields.",
                 "mimeType": "text/markdown",
+            },
+            {
+                "uri": "hackpulse://profile/active",
+                "name": "Active Builder Profile",
+                "description": "Current builder profile constraints, skills, and bookmarks.",
+                "mimeType": "application/json",
             },
         ]
 
@@ -214,16 +286,23 @@ class MCPServer:
                     status=arguments.get("status"),
                     location=arguments.get("location"),
                     tag=arguments.get("tag"),
+                    sort_by_feasibility=bool(arguments.get("sort_by_feasibility", False)),
                     limit=int(arguments.get("limit", 10)),
                     db_path=self.db_path,
                 )
+                data = {"count": len(results), "hackathons": results}
+                top = results[0] if results else None
+                top_str = f"Top match is '{top['title']}' ({top.get('feasibility_score', 0)}% fit)." if top else "No matches found."
+                voice = f"I found {len(results)} hackathons. {top_str}"
+
                 return {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": json.dumps({"count": len(results), "hackathons": results}, indent=2),
-                        }
-                    ],
+                    "content": [{"type": "text", "text": json.dumps(data, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "CAROUSEL",
+                        "voiceSummary": voice,
+                        "data": data,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
                     "isError": False,
                 }
 
@@ -233,10 +312,22 @@ class MCPServer:
                 if not result:
                     return {
                         "content": [{"type": "text", "text": f"Hackathon not found matching '{ident}'"}],
+                        "structuredContent": {
+                            "stageView": "DETAIL",
+                            "voiceSummary": f"Could not find any hackathon matching '{ident}'.",
+                            "data": {},
+                        },
                         "isError": True,
                     }
+                voice = f"Here are the details for '{result.get('title')}'. Prize is {result.get('prize')}, location is {result.get('location')}."
                 return {
                     "content": [{"type": "text", "text": json.dumps(result, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "DETAIL",
+                        "voiceSummary": voice,
+                        "data": result,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
                     "isError": False,
                 }
 
@@ -264,12 +355,24 @@ class MCPServer:
                 if not data:
                     return {
                         "content": [{"type": "text", "text": "Failed to sync: no remote or fallback seed available."}],
+                        "structuredContent": {
+                            "stageView": "CAROUSEL",
+                            "voiceSummary": "Sync failed: no remote catalog or offline seed accessible.",
+                            "data": {},
+                        },
                         "isError": True,
                     }
 
                 sync_res = sync_upstream_json(data, is_fallback=is_fallback, db_path=self.db_path)
+                voice = f"Catalog synchronized. {sync_res.get('total_hackathons')} hackathons active in database ({sync_res.get('source_type')})."
                 return {
                     "content": [{"type": "text", "text": json.dumps(sync_res, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "CAROUSEL",
+                        "voiceSummary": voice,
+                        "data": sync_res,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
                     "isError": False,
                 }
 
@@ -278,8 +381,16 @@ class MCPServer:
                 force_live = bool(arguments.get("force_live", False))
                 audit_res = await self.auditor.audit_rules(ident, force_live=force_live)
                 is_err = "error" in audit_res
+                status = audit_res.get("verification_status", "unknown")
+                voice = f"Rule audit completed for '{audit_res.get('title', ident)}'. Verification status is {status}."
                 return {
                     "content": [{"type": "text", "text": json.dumps(audit_res, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "RULE_AUDIT",
+                        "voiceSummary": voice,
+                        "data": audit_res,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
                     "isError": is_err,
                 }
 
@@ -288,19 +399,85 @@ class MCPServer:
                 new_text = arguments.get("new_rule_text")
                 diff_res = self.auditor.diff_rules(ident, new_rule_text=new_text)
                 is_err = "error" in diff_res
+                risk = diff_res.get("risk_level", "NONE")
+                voice = f"Rule diff analysis for '{diff_res.get('title', ident)}': Risk level is {risk}."
                 return {
                     "content": [{"type": "text", "text": json.dumps(diff_res, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "RULE_DIFF",
+                        "voiceSummary": voice,
+                        "data": diff_res,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
                     "isError": is_err,
+                }
+
+            elif name == "generate_sprint_plan":
+                h_id = arguments.get("hackathon_id", "")
+                hours = int(arguments.get("available_hours", 15))
+                milestone_id = arguments.get("completed_milestone_id")
+                plan = generate_or_update_sprint_plan(
+                    hackathon_id=h_id,
+                    available_hours=hours,
+                    completed_milestone_id=milestone_id,
+                    db_path=self.db_path,
+                )
+                voice = f"Sprint plan for '{plan.get('title')}': {plan.get('progress_percent')}% completed with {plan.get('remaining_hours')} hours remaining."
+                return {
+                    "content": [{"type": "text", "text": json.dumps(plan, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "SPRINT_PLAN",
+                        "voiceSummary": voice,
+                        "data": plan,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
+                    "isError": False,
+                }
+
+            elif name == "manage_builder_profile":
+                action = arguments.get("action", "get").lower()
+                if action == "update" or any(k in arguments for k in ["hours_per_week", "budget_inr", "prefer_online_only", "skills", "toggle_bookmark_id"]):
+                    profile = update_builder_profile(
+                        hours_per_week=arguments.get("hours_per_week"),
+                        budget_inr=arguments.get("budget_inr"),
+                        prefer_online_only=arguments.get("prefer_online_only"),
+                        skills=arguments.get("skills"),
+                        toggle_bookmark_id=arguments.get("toggle_bookmark_id"),
+                        db_path=self.db_path,
+                    )
+                else:
+                    profile = get_builder_profile(db_path=self.db_path)
+
+                voice = f"Builder profile updated for {profile.get('name')}: {profile.get('hours_per_week')}h per week, INR {profile.get('budget_inr')} budget."
+                return {
+                    "content": [{"type": "text", "text": json.dumps(profile, indent=2)}],
+                    "structuredContent": {
+                        "stageView": "PROFILE",
+                        "voiceSummary": voice,
+                        "data": profile,
+                    },
+                    "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
+                    "isError": False,
                 }
 
             else:
                 return {
                     "content": [{"type": "text", "text": f"Unknown tool: '{name}'"}],
+                    "structuredContent": {
+                        "stageView": "CAROUSEL",
+                        "voiceSummary": f"Tool '{name}' is not recognized.",
+                        "data": {},
+                    },
                     "isError": True,
                 }
         except Exception as e:
             return {
                 "content": [{"type": "text", "text": f"Tool execution failed: {type(e).__name__}: {str(e)}"}],
+                "structuredContent": {
+                    "stageView": "CAROUSEL",
+                    "voiceSummary": f"An error occurred executing tool: {type(e).__name__}.",
+                    "data": {},
+                },
                 "isError": True,
             }
 
@@ -335,6 +512,17 @@ class MCPServer:
                             "- `fallback_unverified`: Extracted from curated offline catalog metadata; live text unverified.\n"
                             "- `curated_offline`: Seed-verified offline snapshot.\n"
                         ),
+                    }
+                ]
+            }
+        elif uri == "hackpulse://profile/active":
+            profile = get_builder_profile(db_path=self.db_path)
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": json.dumps(profile, indent=2),
                     }
                 ]
             }
@@ -416,7 +604,6 @@ class MCPServer:
 
         # Handle Initialize
         if method == "initialize":
-            client_version = params.get("protocolVersion", PROTOCOL_VERSION)
             return {
                 "jsonrpc": "2.0",
                 "id": req_id,

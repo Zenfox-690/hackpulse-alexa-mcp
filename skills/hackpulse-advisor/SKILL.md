@@ -1,50 +1,58 @@
 ---
 name: hackpulse-advisor
-description: Autonomous hackathon advisory skill using MCP tools for discovery, real-time rule verification, hosting requirements analysis, and rule diff tracking.
+description: Autonomous hackathon advisory skill using MCP tools for discovery, profile feasibility scoring, real-time rule provenance auditing, rule diff tracking, and calibrated 15-hour sprint planning.
 ---
 
 # HackPulse Advisor Agent Skill
 
-This skill equips agentic pair-programmers with systematic workflows to discover hackathons, verify participation rules, track regulatory diffs, and validate project hosting requirements.
+This skill equips agentic pair-programmers with systematic workflows to discover hackathons, evaluate builder feasibility, audit participation rules with verifiable provenance, track regulatory diffs, and generate time-boxed sprint plans.
 
 ## Available MCP Tools
 
-The `hackpulse-alexa-mcp` backend exposes five core tools:
+The `hackpulse-alexa-mcp` backend exposes seven core tools:
 
-1. **`search_hackathons`**: Discover open, ended, or upcoming hackathons with keyword, tag, location, and platform filters (`Devpost`, `Devfolio`, `Unstop`).
+1. **`search_hackathons`**: Discover open, ended, or upcoming hackathons with keyword, tag, location, and platform filters (`Devpost`, `Devfolio`, `Unstop`). Automatically computes deterministic `feasibility_score` (0-100) based on active builder profile constraints (`budget_and_location_fit`, `stack_and_domain_fit`, `timeline_fit`, `prize_and_impact_signal`).
 2. **`get_hackathon_details`**: Fetch complete metadata, prize breakdowns, timeline dates, and canonical portal links.
-3. **`sync_upstream_catalog`**: Refresh local database state from remote upstream catalog or offline fallback seed.
-4. **`audit_rules`**: Run rule and FAQ extraction with explicit provenance tracking (`source_url`, `retrieval_timestamp`, and `verification_status`: `verified_live` vs. `fallback_unverified`).
-5. **`diff_rules`**: Detect changes across rule versions or test a candidate submission against audited requirements.
+3. **`sync_upstream_catalog`**: Refresh local SQLite state from remote upstream catalog or offline fallback seed.
+4. **`audit_rules`**: Run rule and FAQ extraction with explicit provenance tracking (`source_url`, `retrieval_timestamp`, and `verification_status`: `verified_live` vs. `fallback_unverified`). Extracts `eligibility`, `team_size`, `submission_requirements`, and `hosting_requirements`.
+5. **`diff_rules`**: Detect changes across rule revisions or test a candidate submission against audited requirements with risk scoring (`HIGH`, `MEDIUM`, `LOW`).
+6. **`generate_sprint_plan`**: Create or update a persistent, time-boxed sprint plan calibrated to builder hours (default 15h/week), structured into 5 concrete milestones (M1–M5), an explicit Hour 6 Go/No-Go checkpoint, and hackathon reuse compliance documentation. Supports milestone checkbox toggles.
+7. **`manage_builder_profile`**: Retrieve or update persistent cross-session builder profile attributes (`hours_per_week`, `budget_inr`, `prefer_online_only`, `skills`, or toggle bookmark IDs).
 
 ---
 
-## Standard Workflows
+## 4-Stage Agentic Workflow
 
-### 1. Hackathon Discovery & Filtering
-When the user asks for hackathons in a domain (e.g. "Find AI hackathons with prizes"):
-- Call `search_hackathons(query="ai", status="open", limit=10)`.
-- If filtered results are empty, broaden by searching tags (`tag="ai"`) or sources.
-- Present sorted options with normalized deadlines and prize amounts.
+### Stage 1: Profile-Calibrated Discovery & Feasibility Ranking
+1. Call `manage_builder_profile(action="get")` to inspect the builder's available hours (e.g. 15h/week), budget (e.g. ₹0), location preference (Online Only), and technical stack.
+2. Call `search_hackathons(sort_by_feasibility=True, limit=10)`.
+3. Filter out options that conflict with hard constraints (e.g., in-person travel for ₹0 budget builders).
+4. Review `fit_reasons` and `risk_flags` for top-ranked opportunities.
 
-### 2. Rule & Hosting Verification (Guardrail Compliance)
-Before advising a user to commit to a hackathon:
-- Always call `audit_rules(identifier=hackathon_id)`.
-- Check the `verification_status`:
-  - If `verified_live`: Highlight live-inspected constraints.
-  - If `fallback_unverified`: Clearly state: *"Treated as unverified offline fallback per execution guardrails. Live HTTP fetch could not be confirmed."*
-- Check the `hosting_requirements` section specifically:
-  - Correct any assumptions that require complex post-submission cloud infrastructure unless explicitly stated in official rules.
+### Stage 2: Rule Auditing & Provenance Verification (Guardrail Compliance)
+Before advising any builder to begin work:
+1. Always invoke `audit_rules(identifier=hackathon_id)`.
+2. Inspect `verification_status`:
+   - `verified_live`: Highlight live-inspected constraints, timestamp, and source URL.
+   - `fallback_unverified`: Clearly state: *"Treated as unverified offline fallback per execution guardrails. Live HTTP fetch could not be confirmed."*
+3. Check `hosting_requirements` specifically:
+   - Identify whether post-submission cloud hosting is mandatory (e.g. keeping endpoint live through Nov 20) or if a demo recording suffices.
 
-### 3. Change Detection & Deadline Tracking
-If a hackathon deadline or terms might have shifted:
-- Call `diff_rules(identifier=hackathon_id)`.
-- Report `has_changes` and assess the `risk_level` (`HIGH` for deadline/deliverable changes).
+### Stage 3: Rule Diff & Risk Evaluation
+When evaluating differences between promotional listings and official terms:
+1. Invoke `diff_rules(identifier=hackathon_id, new_rule_text=candidate_terms)`.
+2. Review `risk_level`:
+   - `HIGH`: Deadline shifts, strict deliverable additions, or mandatory deployment rules.
+   - `MEDIUM`: Eligibility or team size modifications.
+   - `LOW`: Formatting, cosmetic, or documentation clarifications.
 
-### 4. Readiness & Pre-Submission Audit
-Before submitting:
-- Verify:
-  1. Team size compliance (e.g. 1-4 members).
-  2. Public code repository accessibility (e.g. GitHub link).
-  3. Video duration limits (typically 2-3 minutes).
-  4. Working demo or cloud endpoint accessibility.
+### Stage 4: Calibrated 15-Hour Sprint & Go/No-Go Planning
+1. Invoke `generate_sprint_plan(hackathon_id=hackathon_id, available_hours=15)`.
+2. Present the 5 concrete milestones:
+   - **M1**: Scope & Upstream Data Bridge (2h)
+   - **M2**: Core Backend / MCP Protocol & Provenance (4h)
+   - **M3**: Centre-Stage Multimodal UI (4h)
+   - **M4**: Zero-Cost Cloud Hosting & Verification (3h)
+   - **M5**: 2.5-Min Demo Video & Submission (2h)
+3. Enforce the **Hour 6 Go/No-Go Checkpoint**: verify core protocol and data before continuing.
+4. Document compliance with hackathon reuse policies: upstream projects must remain untouched, read-only feeds while all new MCP and UI logic is built cleanly in the target repository.
