@@ -24,7 +24,6 @@ class RuleAuditor:
         """Finds likely rules / guidelines / FAQ elements in HTML."""
         rules_texts: List[str] = []
 
-        # Common rule selectors across Devpost, Devfolio, Unstop
         selectors = [
             "#rules",
             ".rules",
@@ -46,11 +45,9 @@ class RuleAuditor:
                     rules_texts.append(t)
 
         if not rules_texts:
-            # Fallback: search headings containing 'rule', 'guideline', 'faq'
             for h in soup.find_all(["h2", "h3", "h4"]):
                 heading_text = h.get_text().strip().lower()
                 if any(w in heading_text for w in ["rule", "guideline", "eligibility", "submission", "faq", "criteria"]):
-                    # Gather sibling paragraphs
                     content = []
                     curr = h.find_next_sibling()
                     count = 0
@@ -64,7 +61,6 @@ class RuleAuditor:
                     if content:
                         rules_texts.append(h.get_text() + "\n" + "\n".join(content))
 
-        # If still nothing, extract main text
         if not rules_texts:
             main = soup.find("main") or soup.find("article") or soup.find("body")
             if main:
@@ -205,7 +201,9 @@ class RuleAuditor:
         identifier: str,
         new_rule_text: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Calculates differences between rule revisions or against candidate text."""
+        """Calculates differences between rule revisions or against candidate text.
+        Automatically seeds a baseline audit if none exists.
+        """
         hackathon = get_hackathon(identifier, db_path=self.db_path)
         if not hackathon:
             return {
@@ -217,14 +215,30 @@ class RuleAuditor:
         audits = get_rule_audits(h_id, limit=5, db_path=self.db_path)
 
         if not audits:
-            return {
-                "hackathon_id": h_id,
-                "title": hackathon["title"],
-                "has_changes": False,
-                "message": "No historical audits found. Run audit_rules first.",
-                "diff_unified": "",
-                "risk_level": "NONE",
-            }
+            # Create automatic baseline audit so diff works immediately
+            final_rules_text = (
+                f"Catalog Description & Baseline:\n{hackathon['description']}\n\n"
+                f"Tags: {', '.join(hackathon.get('tags', []))}\n"
+                f"Prize: {hackathon.get('prize', 'Unknown')}\n"
+                f"Deadline: {hackathon.get('deadline', 'N/A')}\n"
+                f"Location: {hackathon.get('location', 'Online')}"
+            )
+            categories = self._parse_rule_categories(final_rules_text, hackathon.get("description", ""))
+            content_hash = hashlib.sha256(final_rules_text.encode("utf-8")).hexdigest()
+            save_rule_audit(
+                hackathon_id=h_id,
+                source_url=hackathon.get("url", ""),
+                verification_status="fallback_unverified",
+                raw_rules_text=final_rules_text,
+                eligibility=categories["eligibility"],
+                team_size=categories["team_size"],
+                submission_requirements=categories["submission_requirements"],
+                hosting_requirements=categories["hosting_requirements"],
+                content_hash=content_hash,
+                notes="Baseline audit automatically initialized for diff analysis.",
+                db_path=self.db_path,
+            )
+            audits = get_rule_audits(h_id, limit=5, db_path=self.db_path)
 
         latest_audit = audits[0]
         base_text = latest_audit["raw_rules_text"]

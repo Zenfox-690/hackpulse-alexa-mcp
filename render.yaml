@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: hackpulse-alexa-mcp
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 10000

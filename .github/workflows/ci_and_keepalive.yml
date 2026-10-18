@@ -1,0 +1,55 @@
+name: CI & Keep-Alive Uptime Ping (Nov 9-20 Judging Period)
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  schedule:
+    # Runs twice daily at 00:00 and 12:00 UTC to keep free-tier instances warm
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run Automated E2E MCP & UI Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Pytest Suite
+        run: |
+          pytest tests/test_mcp_e2e.py -v
+
+  keepalive:
+    name: Endpoint Keep-Alive Ping (Nov 9-20 Judging)
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Warm-up Ping to Live Endpoint
+        run: |
+          LIVE_URL="${{ vars.HACKPULSE_LIVE_URL }}"
+          if [ -n "$LIVE_URL" ]; then
+            echo "Pinging health endpoint at $LIVE_URL/health..."
+            curl -f -s -m 15 "$LIVE_URL/health" || true
+            echo "Sending MCP initialize handshake to $LIVE_URL/mcp..."
+            curl -f -s -m 15 -X POST "$LIVE_URL/mcp" \
+              -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"github-keepalive","version":"1.0.0"}}}' || true
+            echo "Keep-alive ping finished."
+          else
+            echo "HACKPULSE_LIVE_URL repository variable not set. Skipping ping."
+          fi
