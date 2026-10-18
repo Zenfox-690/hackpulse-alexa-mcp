@@ -373,7 +373,8 @@ def test_tool_search_hackathons_feasibility_and_structured_content():
 
 
 def test_tool_generate_sprint_plan_and_toggle():
-    h_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+    import uuid
+    h_id = f"test_hack_{uuid.uuid4().hex[:8]}"
 
     # 1. Initial plan creation
     payload = {
