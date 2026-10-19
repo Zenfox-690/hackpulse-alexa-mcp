@@ -175,7 +175,7 @@ Open your browser at **`http://localhost:8000`** to experience the Echo Show 15 
 3. The included [`Dockerfile`](Dockerfile) automatically configures:
    - Port `7860`
    - Non-root UID `1000`
-   - `chmod -R 777 /app/data` so SQLite WAL files never trigger readonly permissions errors.
+   - Least-privilege permissions (`chown -R 1000:1000 /app` and `chmod -R 755 /app/data`) ensuring secure SQLite WAL database operations under non-root execution.
 
 ### Option B: Render Free Tier
 1. Connect your GitHub repository to [Render](https://render.com).
@@ -211,6 +211,32 @@ The GitHub Action will ping `/health` and send an MCP `initialize` handshake twi
 
 ---
 
-## 9. License
+## 9. Developer Product Feedback (Alexa+ Track — MCP & Agent Skills)
+
+As part of the Alexa+ Track for the Amazon Developer Hackathon 2026, building **HackPulse Alexa+** with the MCP `2025-11-25` Streamable HTTP standard and Agent Skills provided valuable developer experience insights. Below is constructive product feedback and architectural suggestions:
+
+### 1. MCP `2025-11-25` Streamable HTTP Transport
+- **Strengths:**
+  - The unified single endpoint (`POST /mcp`) replacing dual SSE endpoints (`/sse` + separate POST message channel) drastically simplifies reverse-proxy routing, corporate firewall traversal, and CORS configuration in cloud environments like Hugging Face Spaces and Render.
+  - Stateful session tracking via the `Mcp-Session-Id` header provides clean conversational isolation without polluting request payloads with transport-level metadata.
+- **Friction Points & Opportunities:**
+  - **Multimodal Testing Gap:** For non-partner developers without pre-release Alexa+ hardware access, there is currently no public Alexa+ multimodal web simulator to natively preview and validate `ui://` custom card rendering, touch events, and viewport responsiveness. Providing an open-source or web-based Alexa+ viewport simulator (similar to the Alexa Developer Console's APL Simulator) would dramatically accelerate developer iteration for centre-stage voice/visual experiences.
+
+### 2. MCP Agent Skills (`SKILL.md`) & MCP Apps (`ui://` Resources)
+- **Strengths:**
+  - Standardizing agent workflows into portable markdown playbooks (`SKILL.md`) allows cross-agent interoperability, enabling Alexa+ and paired developer agents to execute multi-stage advisory tasks deterministically without hardcoding agent logic into tool endpoints.
+  - The clean protocol boundary between `structuredContent` (machine-readable state) and text/multimodal presentations enables independent evolution of visual cards and LLM tool arguments.
+- **Friction Points & Opportunities:**
+  - **Schema Validation for Voice UI Transitions:** In voice-first multimodal agents, tools frequently transition across distinct visual stages (e.g., from search deck to live provenance inspection to diff comparison). There is an opportunity for standard tooling or SDK decorators that validate `structuredContent` stage transitions and UI contracts against JSON Schemas, ensuring that multimodal display templates never fail silently when an agent selects alternative tool paths.
+
+### 3. Amazon Developer Documentation & Sample Code
+- **Strengths:**
+  - The conceptual overview of Model Context Protocol integration with agentic skills provides a strong vision for next-generation ambient computing.
+- **Recommendations for `github.com/amazonappdev`:**
+  - **Official Python FastAPI/Starlette Reference Template:** Most existing reference repositories lean heavily toward Node.js/TypeScript or stdio transports. Providing an official, production-ready Python FastAPI/Starlette repository implementing the `2025-11-25` Streamable HTTP specification—complete with session lifecycle management, CORS middleware, non-root Docker packaging, and SSE streaming fallback—would establish a definitive benchmark for Python AI developers building Alexa+ tools.
+
+---
+
+## 10. License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. Mandatory for public open-source submission per hackathon guidelines.

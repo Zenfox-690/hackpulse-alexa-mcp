@@ -27,10 +27,10 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application source code
 COPY --chown=user:user . /app
 
-# Ensure SQLite data directory has full permissions for WAL mode
+# Ensure SQLite data directory has least-privilege ownership and permissions for WAL mode
 RUN mkdir -p /app/data && \
-    chown -R user:user /app && \
-    chmod -R 777 /app/data
+    chown -R 1000:1000 /app && \
+    chmod -R 755 /app/data
 
 USER user
 
