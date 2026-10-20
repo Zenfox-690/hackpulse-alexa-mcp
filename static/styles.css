@@ -19,8 +19,8 @@
   --coral-500: #EF4444;
 
   --text-primary: #F8FAFC;
-  --text-secondary: #94A3B8;
-  --text-muted: #64748B;
+  --text-secondary: #CBD5E1;
+  --text-muted: #94A3B8;
 
   --font-main: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-heading: 'Outfit', sans-serif;
@@ -1235,4 +1235,123 @@ body.echo-show-15 {
 
 .prompt-icon {
   font-size: 36px;
+}
+
+/* -------------------------------------------------------------------------
+   Responsive Viewport & Screen Size Breakpoints
+------------------------------------------------------------------------- */
+@media (max-width: 1400px) {
+  .ambient-header {
+    height: auto;
+    min-height: 64px;
+    flex-wrap: wrap;
+    padding: 8px 16px;
+    gap: 12px;
+  }
+
+  .profile-bar {
+    order: 3;
+    width: 100%;
+    justify-content: space-between;
+    padding: 6px 0 2px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+  }
+
+  .profile-skills-pill {
+    max-width: 260px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+
+@media (max-width: 1024px) {
+  body.echo-show-15 {
+    height: auto;
+    min-height: 100vh;
+    overflow-y: auto;
+  }
+
+  .centre-stage {
+    overflow-y: visible;
+  }
+
+  .stage-nav {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding: 0 12px;
+  }
+
+  .stage-tab {
+    white-space: nowrap;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+
+  .hackathon-grid {
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  }
+
+  .profile-skills-pill {
+    display: none;
+  }
+
+  .judge-scenarios-bar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 4px;
+  }
+
+  .scenario-chip {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 768px) {
+  .ambient-header {
+    padding: 8px 12px;
+  }
+
+  .brand-subtitle {
+    display: none;
+  }
+
+  .profile-controls {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .deck-controls {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .sort-bookmark-group {
+    justify-content: flex-start;
+  }
+
+  .ambient-footer {
+    padding: 8px 12px 12px;
+  }
+
+  .voice-command-bar {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .voice-ticker-box {
+    order: 1;
+    width: calc(100% - 90px);
+  }
+
+  .command-input-group {
+    order: 2;
+    width: 100%;
+  }
+
+  .hackathon-grid {
+    grid-template-columns: 1fr;
+  }
 }

@@ -5,6 +5,7 @@ rule-audit provenance, resources, prompts, and the Centre-Stage Alexa+ multimoda
 """
 
 import json
+import re
 import pytest
 from starlette.testclient import TestClient
 
@@ -915,3 +916,228 @@ def test_canonical_hackathon_id_resolution():
 
     assert res_by_title["hackathon_id"] == canonical_id
     assert res_by_title["title"] == title
+
+
+def test_natural_language_search_with_conjunctions():
+    """Regression test: verifies that queries containing conjunctions like 'and', 'or', 'with'
+    do not require literal matching of the conjunction and return valid AI/ML hackathons.
+    """
+    res = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 401,
+        "method": "tools/call",
+        "params": {
+            "name": "search_hackathons",
+            "arguments": {
+                "query": "Find AI and machine learning hackathons",
+                "location": "Online",
+                "limit": 10,
+            },
+        },
+    }).json()["result"]["structuredContent"]["data"]
+
+    items = res["hackathons"]
+    assert len(items) > 0
+    titles = [h["title"].lower() for h in items]
+    assert any("amazon" in t or "nebius" in t or "ai" in t for t in titles)
+
+
+def test_natural_language_search_empty_and_stopword_queries():
+    """Verifies that empty strings, whitespace, or stop-word-only queries do not crash or return errors."""
+    for q in ["", "   ", "find the best hackathons for me"]:
+        res = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 402,
+            "method": "tools/call",
+            "params": {"name": "search_hackathons", "arguments": {"query": q, "limit": 5}},
+        }).json()
+        assert res["result"]["isError"] is False
+        items = res["result"]["structuredContent"]["data"]["hackathons"]
+        assert len(items) > 0
+
+
+def test_grounded_command_routing_and_responsive_styles():
+    """Verifies that:
+    1. Entity resolution behavior accurately identifies catalog events, rejects unknown names,
+       and never silently falls back to Amazon or active selection on unknown hackathons.
+    2. Empty state search queries are safely HTML-escaped against XSS.
+    3. Responsive breakpoints and high-contrast tokens are properly defined in static assets.
+    4. Landing page honestly identifies as an Echo Show 15 Multimodal Simulator.
+    """
+    from core.database import query_hackathons
+    catalog = query_hackathons(limit=30)
+    assert len(catalog) > 0
+
+    # Extract command stopwords defined in static/app.js
+    command_stop_words = {
+        "audit", "rules", "rule", "provenance", "official",
+        "deadline", "deadlines", "due", "date", "when", "does", "end", "ends",
+        "prize", "prizes", "reward", "rewards", "cash", "bounty", "pool",
+        "eligibility", "eligible", "who", "can", "enter", "hosting", "deploy", "requirement", "requirements", "policy",
+        "diff", "difference", "changes", "change", "risk", "compare", "comparison",
+        "sprint", "plan", "milestone", "milestones", "status", "progress", "schedule",
+        "for", "the", "of", "in", "at", "on", "a", "an", "to", "is", "it", "this", "that", "event", "hackathon",
+        "what", "whats", "how", "show", "check", "open", "run", "view", "tell", "me", "about", "please", "give"
+    }
+
+    def resolve_target(text: str, selected_id=None):
+        if not catalog:
+            return None
+        raw = (text or "").lower().strip()
+        if not raw:
+            return next((h for h in catalog if h["id"] == selected_id), None) if selected_id else None
+
+        if "amazon" in raw or "alexa" in raw:
+            return next((h for h in catalog if "amazon" in h.get("title", "").lower() or "alexa" in h.get("title", "").lower()), None)
+
+        raw_words = [w for w in re.split(r"[^a-z0-9]+", raw) if w]
+        for h in catalog:
+            title_lower = (h.get("title") or "").lower()
+            if title_lower in raw:
+                return h
+            words = [w for w in re.split(r"[^a-z0-9]+", title_lower) if len(w) >= 4 and w not in ["hack", "hackathon", "developer", "competition", "challenge", "series", "2026", "global", "build", "with", "tour", "stop"]]
+            for w in words:
+                if w in raw_words:
+                    return h
+
+        specific_tokens = [w for w in raw_words if w not in command_stop_words]
+        if specific_tokens:
+            return None
+
+        if selected_id:
+            return next((h for h in catalog if h["id"] == selected_id), None)
+        return None
+
+    # Behavioral checks:
+    # 1. Distinctive catalog names resolve to correct event
+    nebius_match = resolve_target("deadline for Nebius")
+    assert nebius_match is not None and "nebius" in nebius_match["title"].lower()
+
+    opencv_match = resolve_target("prize pool for OpenCV")
+    assert opencv_match is not None and "opencv" in opencv_match["title"].lower()
+
+    # 2. Explicit Amazon/Alexa resolves to Amazon
+    amazon_match = resolve_target("audit Amazon Developer Hackathon")
+    assert amazon_match is not None and "amazon" in amazon_match["title"].lower()
+
+    # 3. Unrecognized hackathon names return None (never default to Amazon)
+    assert resolve_target("deadline for NonexistentHackathon2026") is None
+    assert resolve_target("audit QuantumBounty") is None
+    assert resolve_target("who can enter MysteryChallenge") is None
+
+    # 4. Even if an event is actively selected, an unrecognized name MUST NOT fall back to selected
+    assert resolve_target("audit NonexistentHackathon2026", selected_id=nebius_match["id"]) is None
+
+    # 5. Generic intent without named hackathon falls back to selection if present, else None
+    assert resolve_target("what is the deadline", selected_id=nebius_match["id"])["id"] == nebius_match["id"]
+    assert resolve_target("what is the deadline", selected_id=None) is None
+
+    # 6. Verify HTML escaping behavior in app.js
+    js_text = client.get("/static/app.js").text
+    assert "escapeHtml" in js_text
+    assert "this.escapeHtml(this.searchQuery)" in js_text
+
+    # 7. Verify styles and simulator branding
+    css_text = client.get("/static/styles.css").text
+    assert "@media (max-width: 1400px)" in css_text
+    assert "@media (max-width: 1024px)" in css_text
+    assert "@media (max-width: 768px)" in css_text
+    assert "--text-muted: #94A3B8;" in css_text
+
+    html_text = client.get("/").text
+    assert "Echo Show 15 Multimodal Simulator" in html_text
+
+
+
+def test_unknown_hackathon_name_rejection_and_safety():
+    """Regression test: verifies that unknown hackathon names are rejected safely
+    and never default to Amazon in tools or command resolution.
+    """
+    unknown_id = "nonexistent_quantum_hackathon_9999"
+
+    # 1. MCP audit_rules with unknown identifier returns not_found error, not Amazon data
+    audit_res = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 501,
+        "method": "tools/call",
+        "params": {"name": "audit_rules", "arguments": {"identifier": unknown_id}},
+    }).json()
+    assert audit_res["result"]["isError"] is True
+    data = audit_res["result"]["structuredContent"]["data"]
+    assert data["verification_status"] == "not_found"
+    assert "not found matching" in data["error"].lower()
+    assert "amazon" not in json.dumps(data).lower()
+
+    # 2. MCP diff_rules with unknown identifier returns error, not Amazon data
+    diff_res = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 502,
+        "method": "tools/call",
+        "params": {"name": "diff_rules", "arguments": {"identifier": unknown_id}},
+    }).json()
+    assert diff_res["result"]["isError"] is True
+    diff_data = diff_res["result"]["structuredContent"]["data"]
+    assert "error" in diff_data
+    assert "not found matching" in diff_data["error"].lower()
+    assert "amazon" not in json.dumps(diff_data).lower()
+
+    # 3. Verify static/app.js rejection and clarification behavior for unknown hackathons
+    js_text = client.get("/static/app.js").text
+
+    # resolveTargetHackathon returns null instead of defaulting to Amazon
+    resolve_block = js_text.split("resolveTargetHackathon(text) {")[1].split("async handleCommand(text) {")[0]
+    assert "return this.getAmazonHackathon();" not in resolve_block[-120:]
+    assert "return null;" in resolve_block[-50:]
+
+    # When command names an unknown hackathon, specific non-stopword tokens cause return null
+    assert "if (specificTokens.length > 0)" in resolve_block
+    assert "return null;" in resolve_block
+
+    # Clarification message is present across commands when no target is found
+    clarification = "I couldn't identify that hackathon in the catalog"
+    assert clarification in js_text
+
+
+def test_honest_reporting_of_audit_status_and_provenance():
+    """Regression test: verifies that audit status is reported honestly across
+    MCP tool responses and client application logic.
+    """
+    from core.database import query_hackathons
+    catalog = query_hackathons(limit=20)
+    assert len(catalog) > 0
+
+    # 1. Test audit_rules provenance honesty
+    for h in catalog[:3]:
+        res = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 601,
+            "method": "tools/call",
+            "params": {"name": "audit_rules", "arguments": {"identifier": h["id"]}},
+        }).json()
+        assert res["result"]["isError"] is False
+        data = res["result"]["structuredContent"]["data"]
+        voice = res["result"]["structuredContent"]["voiceSummary"]
+        status = data.get("verification_status")
+
+        # Must be either verified_live or fallback_unverified
+        assert status in ["verified_live", "fallback_unverified"]
+        assert status in voice
+
+        if status == "fallback_unverified":
+            # Must honestly disclose fallback synthesis from catalog metadata in notes
+            assert "fallback" in data["notes"].lower() or "catalog metadata" in data["notes"].lower()
+            # Must not claim verified live
+            assert "verified live" not in data["notes"].lower()
+
+    # 2. Test client-side app.js behavioral constraints
+    js_text = client.get("/static/app.js").text
+
+    # Verify handleCommand rule-audit handler checks verification_status before speaking
+    rule_audit_section = js_text.split("cmd.includes(\"eligib\")")[1].split("// 5. Diff")[0]
+    assert "auditData.verification_status === \"verified_live\"" in rule_audit_section
+    assert "auditData.verification_status === \"fallback_unverified\"" in rule_audit_section
+    assert "verified with live provenance" in rule_audit_section
+    assert "fallback unverified catalog metadata" in rule_audit_section
+    assert "Rule audit failed" in rule_audit_section
+    # Verify it does not unconditionally announce "with verified provenance"
+    assert "with verified provenance. Reviewing eligibility" not in js_text

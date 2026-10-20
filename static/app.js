@@ -483,6 +483,16 @@
       }
     }
 
+    escapeHtml(str) {
+      if (!str) return "";
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
     renderHackathons() {
       const grid = document.getElementById("hackathonGrid");
       if (!grid) return;
@@ -494,11 +504,22 @@
 
       if (list.length === 0) {
         this.updateResetButtonVisibility(true);
+        const queryDisplay = this.searchQuery ? `"${this.escapeHtml(this.searchQuery)}"` : "current filters";
         grid.innerHTML = `
-          <div class="loading-state" style="text-align:center; padding: 32px 16px;">
-            <div style="font-size:24px; margin-bottom:8px;">🔍</div>
-            <p style="font-size:14px; color:#E2E8F0; margin-bottom:12px;">No hackathons matching current filters or query.</p>
-            <button class="action-btn primary" onclick="window.app.resetFilters()" style="margin:0 auto;">Clear Search / Reset Filters</button>
+          <div class="empty-recovery-card" style="text-align:center; padding: 36px 20px; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 14px; max-width: 620px; margin: 30px auto; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+            <div style="font-size: 32px; margin-bottom: 12px;">🔍</div>
+            <h3 style="font-size: 18px; color: var(--text-primary); margin-bottom: 8px;">No hackathons matched ${queryDisplay}</h3>
+            <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 18px; line-height: 1.5;">
+              Try one of these recommended search categories or clear restrictive filters:
+            </p>
+            <div class="recovery-chips" style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px;">
+              <button class="chip" onclick="window.app.executeQuickSearch('AI')">🤖 AI & Machine Learning</button>
+              <button class="chip" onclick="window.app.executeQuickSearch('Alexa')">🎙️ Amazon / Alexa+</button>
+              <button class="chip" onclick="window.app.executeQuickSearch('Agent')">⚡ Agentic Hackathons</button>
+              <button class="chip" onclick="window.app.executeQuickSearch('Devpost')">🌐 Devpost</button>
+              <button class="chip" onclick="window.app.executeQuickSearch('')">📋 View All</button>
+            </div>
+            <button class="action-btn primary" onclick="window.app.resetFilters()" style="margin: 0 auto;">✕ Clear Search & Reset Filters</button>
           </div>
         `;
         return;
@@ -604,6 +625,25 @@
       this.speak("Search query and filters reset.");
     }
 
+    setTicker(text) {
+      const ticker = document.getElementById("voiceTickerText");
+      if (ticker) ticker.innerText = text;
+    }
+
+    executeQuickSearch(term) {
+      this.searchQuery = term;
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = term;
+      this.currentFilterSource = "";
+      document.querySelectorAll(".source-chips .chip").forEach((c) => {
+        c.classList.toggle("active", c.dataset.source === "");
+      });
+      this.updateResetButtonVisibility();
+      this.switchTab("opportunityDeck");
+      this.loadHackathons();
+      this.speak(term ? `Filtering catalog for '${term}'.` : "Displaying all available hackathons.");
+    }
+
     setSourceFilter(src) {
       this.searchQuery = "";
       const searchInput = document.getElementById("searchInput");
@@ -657,11 +697,13 @@
     // -------------------------------------------------------------------------
     // Rule Provenance Audit (Tab 2)
     // -------------------------------------------------------------------------
-    async auditHackathon(idOrTitle) {
+    async auditHackathon(idOrTitle, speakSummary = true) {
       this.selectedHackathonId = idOrTitle;
       this.switchTab("ruleAuditBoard");
       const container = document.getElementById("auditBoardContainer");
-      container.innerHTML = `<div class="loading-state">Executing MCP audit_rules with provenance verification...</div>`;
+      if (container) {
+        container.innerHTML = `<div class="loading-state">Executing MCP audit_rules with provenance verification...</div>`;
+      }
 
       const res = await this.callMCP("tools/call", {
         name: "audit_rules",
@@ -671,12 +713,43 @@
       if (res && res.result && res.result.structuredContent) {
         this.currentAuditData = res.result.structuredContent.data;
         this.renderAuditBoard(this.currentAuditData);
-        this.speak(res.result.structuredContent.voiceSummary);
+        if (speakSummary && res.result.structuredContent.voiceSummary) {
+          this.speak(res.result.structuredContent.voiceSummary);
+        }
+        return this.currentAuditData;
+      } else if (res && res.result && res.result.isError) {
+        const errData = (res.result.structuredContent && res.result.structuredContent.data) || {
+          error: "Audit failed",
+          verification_status: "failed",
+        };
+        this.currentAuditData = errData;
+        this.renderAuditBoard(errData);
+        return errData;
       }
+      return null;
     }
 
     renderAuditBoard(data) {
       const container = document.getElementById("auditBoardContainer");
+      if (!container) return;
+
+      if (!data || data.error) {
+        container.innerHTML = `
+          <div class="provenance-card">
+            <div class="provenance-banner fallback_unverified">
+              <div class="prov-status-group">
+                <span style="font-size: 24px;">⚠️</span>
+                <div>
+                  <div class="prov-status-title">Rule Audit Unavailable</div>
+                  <div style="font-size: 11px; opacity: 0.9;">${(data && data.error) || 'Could not retrieve rule provenance for this hackathon.'}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+        return;
+      }
+
       const isLive = data.verification_status === "verified_live";
       const statusClass = isLive ? "verified_live" : "fallback_unverified";
       const statusTitle = isLive ? "Verified Live Official Rules" : "Fallback Unverified Catalog Metadata";
@@ -770,7 +843,12 @@ Official Rules & FAQ Updates:
       if (res && res.result && res.result.structuredContent) {
         this.currentDiffData = res.result.structuredContent.data;
         this.renderDiffView(this.currentDiffData);
-        this.speak(res.result.structuredContent.voiceSummary);
+        const voice = res.result.structuredContent.voiceSummary;
+        if (voice) {
+          this.setTicker(voice);
+          this.speak(voice);
+        }
+        return this.currentDiffData;
       }
     }
 
@@ -845,8 +923,13 @@ Official Rules & FAQ Updates:
         this.currentSprintData = res.result.structuredContent.data;
         this.renderSprintPlanner(this.currentSprintData);
         if (!toggleMilestoneId) {
-          this.speak(res.result.structuredContent.voiceSummary);
+          const voice = res.result.structuredContent.voiceSummary;
+          if (voice) {
+            this.setTicker(voice);
+            this.speak(voice);
+          }
         }
+        return this.currentSprintData;
       }
     }
 
@@ -987,23 +1070,173 @@ Official Rules & FAQ Updates:
       }
     }
 
-    handleCommand(text) {
+    resolveTargetHackathon(text) {
+      if (!this.hackathons || this.hackathons.length === 0) return null;
+      const raw = (text || "").toLowerCase().trim();
+      if (!raw) {
+        return this.selectedHackathonId
+          ? this.hackathons.find((h) => h.id === this.selectedHackathonId) || null
+          : null;
+      }
+
+      // Check if user explicitly asked for amazon or alexa
+      if (raw.includes("amazon") || raw.includes("alexa")) {
+        return this.getAmazonHackathon();
+      }
+
+      // Check specific title terms (e.g. 'nebius', 'meta', 'opencv', 'arkiv', 'paypal', 'qloo', 'splunk')
+      const rawWords = raw.split(/[^a-z0-9]+/);
+      for (const h of this.hackathons) {
+        const titleLower = (h.title || "").toLowerCase();
+        if (raw.includes(titleLower)) {
+          return h;
+        }
+        const titleWords = titleLower.split(/[^a-z0-9]+/).filter(
+          (w) => w.length >= 4 && !["hack", "hackathon", "developer", "competition", "challenge", "series", "2026", "global", "build", "with", "tour", "stop"].includes(w)
+        );
+        for (const word of titleWords) {
+          if (rawWords.includes(word)) {
+            return h;
+          }
+        }
+      }
+
+      // Do not silently default to Amazon or active selection when an unrecognized hackathon is named.
+      const commandStopWords = new Set([
+        "audit", "rules", "rule", "provenance", "official",
+        "deadline", "deadlines", "due", "date", "when", "does", "end", "ends",
+        "prize", "prizes", "reward", "rewards", "cash", "bounty", "pool",
+        "eligibility", "eligible", "who", "can", "enter", "hosting", "deploy", "requirement", "requirements", "policy",
+        "diff", "difference", "changes", "change", "risk", "compare", "comparison",
+        "sprint", "plan", "milestone", "milestones", "status", "progress", "schedule",
+        "for", "the", "of", "in", "at", "on", "a", "an", "to", "is", "it", "this", "that", "event", "hackathon", "hack",
+        "what", "whats", "how", "show", "check", "open", "run", "view", "tell", "me", "about", "please", "give"
+      ]);
+      const rawTokens = raw.split(/[^a-z0-9]+/).filter((w) => w.length > 0);
+      const specificTokens = rawTokens.filter((w) => !commandStopWords.has(w));
+
+      // If user named an entity that was not found in catalog, return null (never default to Amazon)
+      if (specificTokens.length > 0) {
+        return null;
+      }
+
+      // If command was purely generic intent without a specific name, fall back to explicitly selected event if one exists
+      if (this.selectedHackathonId) {
+        const sel = this.hackathons.find((h) => h.id === this.selectedHackathonId);
+        if (sel) return sel;
+      }
+
+      return null;
+    }
+
+    async handleCommand(text) {
       const raw = (text || "").trim();
       const cmd = raw.toLowerCase();
       if (!cmd) return;
       const cmdInput = document.getElementById("commandInput");
       if (cmdInput) cmdInput.value = "";
 
-      if (cmd.includes("audit") || cmd.includes("rules") || cmd.includes("provenance")) {
-        this.runScenario2();
-      } else if (cmd.includes("diff") || cmd.includes("change") || cmd.includes("risk")) {
-        this.runScenario3();
-      } else if (cmd.includes("sprint") || cmd.includes("plan") || cmd.includes("milestone")) {
-        this.runScenario4();
-      } else if (cmd.includes("sync")) {
-        this.syncCatalog();
-      } else if (
+      if (!this.hackathons || this.hackathons.length === 0) {
+        await this.loadHackathons();
+      }
+
+      // 1. Sync catalog command
+      if (cmd.includes("sync") || cmd.includes("refresh catalog")) {
+        await this.syncCatalog();
+        return;
+      }
+
+      // 2. Deadline inquiries
+      if (cmd.includes("deadline") || cmd.includes("when does") || cmd.includes("due date") || cmd.includes("ends")) {
+        const target = this.resolveTargetHackathon(cmd);
+        if (target) {
+          const dl = target.deadline ? target.deadline.split("T")[0] : "TBA";
+          const msg = `Deadline for ${target.title} is ${dl} (Location: ${target.location || 'Online'}).`;
+          this.setTicker(msg);
+          this.speak(msg);
+          this.switchTab("opportunityDeck");
+          return;
+        } else {
+          const msg = "I couldn't identify that hackathon in the catalog. Please select an event from the Opportunity Deck or specify its title.";
+          this.setTicker(msg);
+          this.speak(msg);
+          return;
+        }
+      }
+
+      // 3. Prize / Reward inquiries
+      if (cmd.includes("prize") || cmd.includes("reward") || cmd.includes("cash") || cmd.includes("bounty")) {
+        const target = this.resolveTargetHackathon(cmd);
+        if (target) {
+          const msg = `${target.title} prize pool: ${target.prize || 'Prizes listed'}. Feasibility prize score is ${target.feasibility_score}%.`;
+          this.setTicker(msg);
+          this.speak(msg);
+          this.switchTab("opportunityDeck");
+          return;
+        } else {
+          const msg = "I couldn't identify that hackathon in the catalog. Please select an event from the Opportunity Deck or specify its title.";
+          this.setTicker(msg);
+          this.speak(msg);
+          return;
+        }
+      }
+
+      // 4. Eligibility & Rule inquiries
+      if (cmd.includes("eligib") || cmd.includes("who can") || cmd.includes("hosting") || cmd.includes("deploy requirement") || cmd.includes("audit") || cmd.includes("rules") || cmd.includes("provenance")) {
+        const target = this.resolveTargetHackathon(cmd);
+        if (!target) {
+          const msg = "I couldn't identify that hackathon in the catalog to audit. Please select an event from the Opportunity Deck or specify its title.";
+          this.setTicker(msg);
+          this.speak(msg);
+          return;
+        }
+
+        const auditData = await this.auditHackathon(target.id, false);
+        let msg = "";
+        if (!auditData || auditData.error) {
+          msg = `Rule audit failed for ${target.title}. Could not retrieve official rules.`;
+        } else if (auditData.verification_status === "verified_live") {
+          msg = `Rule audit for ${target.title} verified with live provenance. Reviewing eligibility, hosting, and deliverables on the Rule Provenance board.`;
+        } else if (auditData.verification_status === "fallback_unverified") {
+          msg = `Rule audit for ${target.title} completed with fallback unverified catalog metadata. Live provenance could not be verified.`;
+        } else {
+          msg = `Rule audit completed for ${target.title}. Verification status: ${auditData.verification_status || 'unknown'}.`;
+        }
+        this.setTicker(msg);
+        this.speak(msg);
+        return;
+      }
+
+      // 5. Diff / Risk comparison inquiries
+      if (cmd.includes("diff") || cmd.includes("change") || cmd.includes("risk") || cmd.includes("compare")) {
+        const target = this.resolveTargetHackathon(cmd);
+        if (!target) {
+          const msg = "I couldn't identify that hackathon in the catalog to compare rules. Please select an event from the Opportunity Deck or specify its title.";
+          this.setTicker(msg);
+          this.speak(msg);
+          return;
+        }
+        await this.diffHackathon(target.id);
+        return;
+      }
+
+      // 6. Sprint Plan & Milestone status inquiries
+      if (cmd.includes("sprint") || cmd.includes("plan") || cmd.includes("milestone") || cmd.includes("status") || cmd.includes("progress")) {
+        const target = this.resolveTargetHackathon(cmd);
+        if (!target) {
+          const msg = "I couldn't identify that hackathon in the catalog to generate a sprint plan. Please select an event from the Opportunity Deck or specify its title.";
+          this.setTicker(msg);
+          this.speak(msg);
+          return;
+        }
+        await this.sprintHackathon(target.id);
+        return;
+      }
+
+      // 7. General search / discovery queries
+      if (
         cmd.includes("find") ||
+        cmd.includes("search") ||
         cmd.includes("best") ||
         cmd.includes("top") ||
         cmd.includes("rank") ||
@@ -1011,6 +1244,7 @@ Official Rules & FAQ Updates:
         cmd.includes("feasible") ||
         cmd.includes("zero") ||
         cmd.includes("budget") ||
+        cmd.includes("online") ||
         cmd.includes("match")
       ) {
         this.switchTab("opportunityDeck");
@@ -1019,11 +1253,27 @@ Official Rules & FAQ Updates:
         if (sortBtn) sortBtn.classList.add("active");
         this.handleSearch(raw);
         this.speak(`Searching and ranking hackathons for '${raw}'.`);
-      } else {
-        this.switchTab("opportunityDeck");
-        this.handleSearch(raw);
-        this.speak(`Searching catalog for '${raw}'.`);
+        return;
       }
+
+      // 8. Grounded fallback for out-of-scope / open-ended prompts
+      if (
+        cmd.startsWith("what is the weather") ||
+        cmd.startsWith("write code") ||
+        cmd.startsWith("tell a joke") ||
+        cmd.startsWith("how to bake") ||
+        cmd.startsWith("who won")
+      ) {
+        const msg = "I don't have records for that request in the local catalog. As an ambient MCP advisor, I can help you discover hackathons, audit official rules with verified provenance, compare rule diffs, or track your 15h sprint plan.";
+        this.setTicker(msg);
+        this.speak(msg);
+        return;
+      }
+
+      // 9. Default keyword search
+      this.switchTab("opportunityDeck");
+      this.handleSearch(raw);
+      this.speak(`Searching catalog for '${raw}'.`);
     }
   }
 

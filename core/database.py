@@ -31,9 +31,12 @@ DEFAULT_PROFILE_DATA = {
 CONVERSATIONAL_STOP_WORDS = {
     "find", "show", "me", "the", "best", "top", "good", "online",
     "in-person", "hackathons", "hackathon", "events", "for", "a",
-    "an", "with", "under", "zero", "rupee", "free", "budget", "in",
+    "an", "and", "or", "with", "under", "zero", "rupee", "free", "budget", "in",
     "my", "profile", "feasible", "search", "list", "get", "recommend",
     "match", "matches", "please", "can", "you", "tell", "about", "looking",
+    "to", "of", "on", "at", "by", "from", "any", "all", "some", "is",
+    "are", "do", "does", "have", "has", "what", "which", "where", "when",
+    "how", "give", "i", "we", "want", "need", "like", "would",
 }
 
 
@@ -607,6 +610,7 @@ def query_hackathons(
     conn = get_db_connection(db_path)
     sql = ["SELECT * FROM hackathons WHERE 1=1"]
     params: List[Any] = []
+    meaningful_tokens: List[str] = []
 
     if query and query.strip():
         q_raw = query.strip()
@@ -628,10 +632,12 @@ def query_hackathons(
         meaningful_tokens = [t for t in tokens if t not in CONVERSATIONAL_STOP_WORDS]
 
         if meaningful_tokens:
+            token_clauses = []
             for token in meaningful_tokens:
                 t_param = f"%{token}%"
-                sql.append("AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source) LIKE ?)")
+                token_clauses.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(source) LIKE ?)")
                 params.extend([t_param, t_param, t_param, t_param])
+            sql.append(f"AND ({' OR '.join(token_clauses)})")
         # If no meaningful domain tokens remain (e.g. "Find the best online hackathons for a zero-rupee budget"),
         # we deliberately avoid adding an impossible literal sentence match, allowing location and feasibility
         # flags to cleanly filter and rank catalog items.
@@ -653,7 +659,8 @@ def query_hackathons(
         params.append(f"%{tag.strip()}%")
 
     sql.append("ORDER BY CASE WHEN deadline != '' THEN deadline ELSE '9999-99-99' END ASC LIMIT ?")
-    params.append(max(1, min(limit, 100)))
+    fetch_limit = max(limit * 3, 50) if (meaningful_tokens or sort_by_feasibility) else limit
+    params.append(max(1, min(fetch_limit, 200)))
 
     rows = conn.execute(" ".join(sql), params).fetchall()
     profile = get_builder_profile(db_path=db_path)
@@ -678,14 +685,55 @@ def query_hackathons(
         }
         scored = score_hackathon_for_profile(item, profile)
         item.update(scored)
+
+        # Calculate search relevance score
+        relevance_score = 0
+        matched_token_count = 0
+        if meaningful_tokens:
+            item_text = f"{item['title']} {item['description']} {' '.join(item['tags'])} {item['source']}".lower()
+            title_text = item['title'].lower()
+            tags_text = " ".join(item['tags']).lower()
+
+            for token in meaningful_tokens:
+                if token in item_text:
+                    matched_token_count += 1
+                    if token in title_text:
+                        relevance_score += 15
+                    elif token in tags_text:
+                        relevance_score += 10
+                    else:
+                        relevance_score += 5
+
+            if matched_token_count == len(meaningful_tokens):
+                relevance_score += 25
+
+            clean_q = " ".join(meaningful_tokens)
+            if clean_q in title_text:
+                relevance_score += 30
+            elif clean_q in item_text:
+                relevance_score += 15
+
+        item["search_relevance"] = relevance_score
+        item["matched_tokens"] = matched_token_count
         results.append(item)
 
     conn.close()
 
     if sort_by_feasibility:
-        results.sort(key=lambda x: x.get("feasibility_score", 0), reverse=True)
+        if meaningful_tokens:
+            results.sort(
+                key=lambda x: (x.get("matched_tokens", 0) > 0, x.get("feasibility_score", 0), x.get("search_relevance", 0)),
+                reverse=True,
+            )
+        else:
+            results.sort(key=lambda x: x.get("feasibility_score", 0), reverse=True)
+    elif meaningful_tokens:
+        results.sort(
+            key=lambda x: (x.get("search_relevance", 0), x.get("feasibility_score", 0)),
+            reverse=True,
+        )
 
-    return results
+    return results[:limit]
 
 
 def get_hackathon(
