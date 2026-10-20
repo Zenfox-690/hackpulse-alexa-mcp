@@ -43,6 +43,17 @@ app.add_middleware(
     expose_headers=["Mcp-Session-Id", "Content-Type"],
 )
 
+@app.middleware("http")
+async def add_anti_caching_headers(request: Request, call_next):
+    """Ensures dynamic UI and script changes are always fresh in browser runtime."""
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # Mount static assets
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -53,7 +64,15 @@ def serve_index():
     """Serves the Amazon Echo Show 15 / Alexa+ Centre-Stage Web Interface."""
     index_file = STATIC_DIR / "index.html"
     if index_file.exists():
-        return FileResponse(str(index_file), media_type="text/html")
+        return FileResponse(
+            str(index_file),
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
     return {"message": "HackPulse Alexa+ Backend Online. (static/index.html not found)"}
 
 

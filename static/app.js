@@ -18,6 +18,8 @@
       this.currentAuditData = null;
       this.currentDiffData = null;
       this.currentSprintData = null;
+      this._activeUtterance = null;
+      this.selectedVoice = null;
     }
 
     async init() {
@@ -152,68 +154,210 @@
 
     speak(text) {
       if (!text) return;
-      document.getElementById("voiceTickerText").innerText = text;
+      const ticker = document.getElementById("voiceTickerText");
+      if (ticker) ticker.innerText = text;
 
       if (!this.speechSynthEnabled || !window.speechSynthesis) return;
-      window.speechSynthesis.cancel();
+
+      // Coordinate lifecycles: do not play audio synthesis while user is actively recording into the microphone
+      if (this.isListening) {
+        return;
+      }
+
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 1.05;
       utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
+      if (this.selectedVoice) {
+        utterance.voice = this.selectedVoice;
+      }
+
+      // GC Protection: Retain on this and window to prevent V8 from prematurely terminating audio
+      this._activeUtterance = utterance;
+      window._activeUtterance = utterance;
+
+      const cleanupUtterance = () => {
+        if (this._activeUtterance === utterance) {
+          this._activeUtterance = null;
+          window._activeUtterance = null;
+        }
+      };
+      utterance.onend = cleanupUtterance;
+      utterance.onerror = cleanupUtterance;
+
+      // Avoid Chromium/Edge synchronous cancel() race condition
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+        setTimeout(() => {
+          try {
+            window.speechSynthesis.speak(utterance);
+          } catch(e) {
+            cleanupUtterance();
+          }
+        }, 35);
+      } else {
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch(e) {
+          cleanupUtterance();
+        }
+      }
     }
 
     toggleTTS() {
       this.speechSynthEnabled = !this.speechSynthEnabled;
-      document.getElementById("ttsIcon").innerText = this.speechSynthEnabled ? "🔊" : "🔇";
+      const icon = document.getElementById("ttsIcon");
+      if (icon) icon.innerText = this.speechSynthEnabled ? "🔊" : "🔇";
       if (!this.speechSynthEnabled && window.speechSynthesis) {
         window.speechSynthesis.cancel();
       }
     }
 
     initSpeech() {
+      if (window.speechSynthesis) {
+        const updateVoices = () => {
+          const voices = window.speechSynthesis.getVoices();
+          if (voices && voices.length > 0) {
+            this.selectedVoice = voices.find(v => v.lang.startsWith("en") && (v.name.includes("Natural") || v.name.includes("Google") || v.name.includes("Samantha") || v.name.includes("David"))) ||
+              voices.find(v => v.lang.startsWith("en")) ||
+              voices[0];
+          }
+        };
+        updateVoices();
+        window.speechSynthesis.onvoiceschanged = updateVoices;
+      }
+      // Speech recognition is lazily initialized on user activation (toggleSpeechRecognition)
+      // to avoid requesting microphone access before explicit user activation.
+    }
+
+    updateMicUI(listening, customTitle = null) {
+      const mic = document.getElementById("micBtn");
+      if (!mic) return;
+      if (listening) {
+        mic.classList.add("listening");
+        mic.title = customTitle || "Listening for speech... Click to stop";
+      } else {
+        mic.classList.remove("listening");
+        mic.title = customTitle || "Click microphone to speak";
+      }
+    }
+
+    getSpeechRecognition() {
+      if (this.recognition) return this.recognition;
+
       const SpeechClass = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechClass) {
-        document.getElementById("micBtn").title = "Web Speech API not supported in this browser";
-        return;
+        return null;
       }
 
-      this.recognition = new SpeechClass();
-      this.recognition.continuous = false;
-      this.recognition.lang = "en-US";
-      this.recognition.interimResults = false;
+      const rec = new SpeechClass();
+      rec.continuous = false;
+      rec.lang = "en-US";
+      rec.interimResults = false;
+      rec.maxAlternatives = 1;
 
-      this.recognition.onstart = () => {
+      rec.onstart = () => {
         this.isListening = true;
-        document.getElementById("micBtn").classList.add("listening");
-        document.getElementById("voiceTickerText").innerText = "Listening for command...";
+        this.updateMicUI(true);
+        const ticker = document.getElementById("voiceTickerText");
+        if (ticker) ticker.innerText = "Listening... Speak a search query or command.";
       };
 
-      this.recognition.onresult = (event) => {
-        const transcript = event.results[0][0].transcript;
-        document.getElementById("commandInput").value = transcript;
-        this.handleCommand(transcript);
+      rec.onresult = (event) => {
+        if (!event.results || !event.results[0] || !event.results[0][0]) return;
+        const transcript = (event.results[0][0].transcript || "").trim();
+        if (!transcript) return;
+
+        // Insert readable text into command input for user review/editing
+        const cmdInput = document.getElementById("commandInput");
+        if (cmdInput) {
+          cmdInput.value = transcript;
+          cmdInput.focus();
+        }
+
+        const ticker = document.getElementById("voiceTickerText");
+        if (ticker) {
+          ticker.innerText = `Heard: "${transcript}". Press Send or Enter to execute.`;
+        }
       };
 
-      this.recognition.onerror = () => {
+      rec.onerror = (event) => {
         this.isListening = false;
-        document.getElementById("micBtn").classList.remove("listening");
+        this.updateMicUI(false);
+        const err = event.error || "unknown";
+        let message = `Microphone input error (${err}).`;
+        if (err === "not-allowed" || err === "service-not-allowed") {
+          message = "Microphone access denied. Please allow microphone permissions in your browser.";
+        } else if (err === "no-speech") {
+          message = "No speech detected. Click the mic icon and speak clearly into your microphone.";
+        } else if (err === "audio-capture") {
+          message = "No microphone hardware detected or audio capture failed.";
+        } else if (err === "network") {
+          const isBrave = !!(navigator.brave && typeof navigator.brave.isBrave === "function");
+          if (isBrave) {
+            message = "Speech network error: Brave blocks Google Speech services by default. To enable voice in Brave, turn on 'Use Google services for speech recognition' in brave://settings/privacy, test in Chrome/Edge, or use the command bar below.";
+          } else {
+            message = "Speech recognition network connection error: The browser's external speech service is unreachable. Please use the command bar below or test in Chrome/Edge.";
+          }
+        } else if (err === "aborted") {
+          message = "Listening stopped.";
+        }
+        const ticker = document.getElementById("voiceTickerText");
+        if (ticker) ticker.innerText = message;
+
+        // Auto-focus command input so user can type seamlessly without interruption
+        const cmdInput = document.getElementById("commandInput");
+        if (cmdInput) {
+          cmdInput.focus();
+        }
       };
 
-      this.recognition.onend = () => {
+      rec.onend = () => {
         this.isListening = false;
-        document.getElementById("micBtn").classList.remove("listening");
+        this.updateMicUI(false);
       };
+
+      this.recognition = rec;
+      return rec;
     }
 
     toggleSpeechRecognition() {
-      if (!this.recognition) {
-        alert("Speech recognition is not supported in this browser. Please use the command bar.");
+      const rec = this.getSpeechRecognition();
+      if (!rec) {
+        const msg = "Web Speech Recognition is not supported in this browser. Please use the text command bar.";
+        const ticker = document.getElementById("voiceTickerText");
+        if (ticker) ticker.innerText = msg;
+        this.updateMicUI(false, msg);
+        const cmdInput = document.getElementById("commandInput");
+        if (cmdInput) cmdInput.focus();
         return;
       }
+
       if (this.isListening) {
-        this.recognition.stop();
+        try {
+          rec.stop();
+        } catch (e) {
+          this.isListening = false;
+          this.updateMicUI(false);
+        }
       } else {
-        this.recognition.start();
+        // Stop any active TTS audio output before recording to prevent self-transcription
+        if (window.speechSynthesis && window.speechSynthesis.speaking) {
+          window.speechSynthesis.cancel();
+        }
+
+        try {
+          rec.start();
+        } catch (err) {
+          if (err.name === "InvalidStateError") {
+            try { rec.stop(); } catch (e) {}
+          }
+          this.isListening = false;
+          this.updateMicUI(false);
+          const ticker = document.getElementById("voiceTickerText");
+          if (ticker) ticker.innerText = `Could not start microphone (${err.message || err.name}). Click to retry or type below.`;
+          const cmdInput = document.getElementById("commandInput");
+          if (cmdInput) cmdInput.focus();
+        }
       }
     }
 
@@ -234,8 +378,28 @@
 
     renderProfile() {
       if (!this.profile) return;
-      document.getElementById("profileName").innerText = this.profile.name;
-      document.getElementById("bookmarkCount").innerText = (this.profile.bookmarks || []).length;
+      const nameEl = document.getElementById("profileName");
+      if (nameEl) nameEl.innerText = this.profile.name || "Demo Builder (CSE Student)";
+
+      const countryEl = document.getElementById("profileCountry");
+      if (countryEl && this.profile.country) {
+        countryEl.innerText = this.profile.country;
+      }
+
+      const skillsEl = document.getElementById("profileSkills");
+      if (skillsEl && Array.isArray(this.profile.skills) && this.profile.skills.length > 0) {
+        const topSkills = this.profile.skills.slice(0, 4).join(" • ");
+        skillsEl.innerText = topSkills;
+        skillsEl.title = this.profile.skills.join(", ");
+      }
+
+      const budgetEl = document.getElementById("profileBudget");
+      if (budgetEl && this.profile.budget_inr !== undefined) {
+        budgetEl.innerText = `₹${Math.round(this.profile.budget_inr)} Budget`;
+      }
+
+      const bmCount = document.getElementById("bookmarkCount");
+      if (bmCount) bmCount.innerText = (this.profile.bookmarks || []).length;
 
       // Update hours buttons
       document.querySelectorAll(".hours-selector .pill-btn").forEach((btn) => {
@@ -329,9 +493,17 @@
       }
 
       if (list.length === 0) {
-        grid.innerHTML = '<div class="loading-state">No hackathons matching current filters. Try resetting search or filters.</div>';
+        this.updateResetButtonVisibility(true);
+        grid.innerHTML = `
+          <div class="loading-state" style="text-align:center; padding: 32px 16px;">
+            <div style="font-size:24px; margin-bottom:8px;">🔍</div>
+            <p style="font-size:14px; color:#E2E8F0; margin-bottom:12px;">No hackathons matching current filters or query.</p>
+            <button class="action-btn primary" onclick="window.app.resetFilters()" style="margin:0 auto;">Clear Search / Reset Filters</button>
+          </div>
+        `;
         return;
       }
+      this.updateResetButtonVisibility();
 
       grid.innerHTML = list.map((h) => {
         const score = h.feasibility_score || 50;
@@ -393,16 +565,54 @@
     }
 
     handleSearch(val) {
-      this.searchQuery = val.trim();
+      this.searchQuery = (val || "").trim();
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput && searchInput.value !== this.searchQuery) {
+        searchInput.value = this.searchQuery;
+      }
+      this.updateResetButtonVisibility();
       clearTimeout(this._searchTimer);
       this._searchTimer = setTimeout(() => this.loadHackathons(), 250);
     }
 
+    updateResetButtonVisibility(forceShow = false) {
+      const resetBtn = document.getElementById("resetSearchBtn");
+      if (!resetBtn) return;
+      if (forceShow || this.searchQuery.length > 0 || this.currentFilterSource || this.onlyBookmarks) {
+        resetBtn.style.display = "inline-flex";
+      } else {
+        resetBtn.style.display = "none";
+      }
+    }
+
+    resetFilters() {
+      this.searchQuery = "";
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = "";
+      this.currentFilterSource = "";
+      document.querySelectorAll(".source-chips .chip").forEach((c) => {
+        c.classList.toggle("active", c.dataset.source === "");
+      });
+      this.onlyBookmarks = false;
+      const bmBtn = document.getElementById("filterBookmarksBtn");
+      if (bmBtn) bmBtn.classList.remove("active");
+      this.sortFeasibility = true;
+      const sortBtn = document.getElementById("sortFeasibilityBtn");
+      if (sortBtn) sortBtn.classList.add("active");
+      this.updateResetButtonVisibility();
+      this.loadHackathons();
+      this.speak("Search query and filters reset.");
+    }
+
     setSourceFilter(src) {
+      this.searchQuery = "";
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = "";
       this.currentFilterSource = src;
       document.querySelectorAll(".source-chips .chip").forEach((c) => {
         c.classList.toggle("active", c.dataset.source === src);
       });
+      this.updateResetButtonVisibility();
       this.loadHackathons();
     }
 
@@ -472,6 +682,15 @@
       const statusTitle = isLive ? "Verified Live Official Rules" : "Fallback Unverified Catalog Metadata";
       const cats = data.categories || {};
 
+      const isAmazonEvent = (data.title || "").toLowerCase().includes("amazon") ||
+        data.hackathon_id === "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8";
+
+      const amazonWarningHtml = isAmazonEvent ? `
+        <div style="margin-top:6px; font-size:11px; color:#FCA5A5;">
+          * Guardrail Warning: Amazon Developer Hackathon requires keeping the live MCP streamable endpoint online through judging (Nov 20).
+        </div>
+      ` : "";
+
       container.innerHTML = `
         <div class="provenance-card">
           <div class="provenance-banner ${statusClass}">
@@ -506,9 +725,7 @@
               <div class="rule-category-title" style="color: #A5B4FC;"><span>☁️</span> Post-Submission Hosting & Uptime</div>
               <div class="rule-category-content">
                 <strong>Hosting Policy:</strong> ${cats.hosting_requirements || 'Ensure test endpoint remains accessible.'}
-                <div style="margin-top:6px; font-size:11px; color:#FCA5A5;">
-                  * Guardrail Warning: Amazon Developer Hackathon requires keeping the live MCP streamable endpoint online through judging (Nov 20).
-                </div>
+                ${amazonWarningHtml}
               </div>
             </div>
           </div>
@@ -690,32 +907,72 @@ Official Rules & FAQ Updates:
     // One-Click Judge Scenarios
     // -------------------------------------------------------------------------
     async runScenario1() {
+      this.searchQuery = "";
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = "";
+      this.updateResetButtonVisibility();
       this.switchTab("opportunityDeck");
       this.sortFeasibility = true;
-      document.getElementById("sortFeasibilityBtn").classList.add("active");
+      const sortBtn = document.getElementById("sortFeasibilityBtn");
+      if (sortBtn) sortBtn.classList.add("active");
       await this.loadHackathons();
-      this.speak("Judges Scenario 1: Ranked all hackathons for Avanish's ₹0 budget and 15-hour weekly runway. Top online options are sorted by feasibility.");
+      this.speak("Judges Scenario 1: Ranked all hackathons for the demo builder's ₹0 budget and 15-hour weekly runway. Top online options are sorted by feasibility.");
+    }
+
+    getAmazonHackathon() {
+      const AMAZON_ID = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8";
+      // 1. Explicit verified Amazon hackathon ID or fingerprint
+      let target = this.hackathons.find((h) => h.id === AMAZON_ID || h.fingerprint === AMAZON_ID);
+      if (target) return target;
+
+      // 2. Match by title containing Amazon Developer Hackathon or Alexa
+      target = this.hackathons.find((h) => {
+        const title = (h.title || "").toLowerCase();
+        return title.includes("amazon") || title.includes("alexa");
+      });
+      if (target) return target;
+
+      // 3. Fallback to currently selected event if present, otherwise first available
+      if (this.selectedHackathonId) {
+        target = this.hackathons.find((h) => h.id === this.selectedHackathonId);
+        if (target) return target;
+      }
+      return this.hackathons[0] || null;
     }
 
     async runScenario2() {
-      // Find an Alexa or AI hackathon
-      const alexa = this.hackathons.find((h) => h.title.toLowerCase().includes("alexa") || h.title.toLowerCase().includes("agent")) || this.hackathons[0];
-      if (alexa) {
-        await this.auditHackathon(alexa.id);
+      this.searchQuery = "";
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = "";
+      this.updateResetButtonVisibility();
+      if (!this.hackathons || this.hackathons.length === 0) await this.loadHackathons();
+      const target = this.getAmazonHackathon();
+      if (target) {
+        await this.auditHackathon(target.id);
       }
     }
 
     async runScenario3() {
-      const alexa = this.hackathons.find((h) => h.title.toLowerCase().includes("alexa") || h.title.toLowerCase().includes("agent")) || this.hackathons[0];
-      if (alexa) {
-        await this.diffHackathon(alexa.id);
+      this.searchQuery = "";
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = "";
+      this.updateResetButtonVisibility();
+      if (!this.hackathons || this.hackathons.length === 0) await this.loadHackathons();
+      const target = this.getAmazonHackathon();
+      if (target) {
+        await this.diffHackathon(target.id);
       }
     }
 
     async runScenario4() {
-      const alexa = this.hackathons.find((h) => h.title.toLowerCase().includes("alexa") || h.title.toLowerCase().includes("agent")) || this.hackathons[0];
-      if (alexa) {
-        await this.sprintHackathon(alexa.id);
+      this.searchQuery = "";
+      const searchInput = document.getElementById("searchInput");
+      if (searchInput) searchInput.value = "";
+      this.updateResetButtonVisibility();
+      if (!this.hackathons || this.hackathons.length === 0) await this.loadHackathons();
+      const target = this.getAmazonHackathon();
+      if (target) {
+        await this.sprintHackathon(target.id);
       }
     }
 
@@ -731,13 +988,13 @@ Official Rules & FAQ Updates:
     }
 
     handleCommand(text) {
-      const cmd = text.trim().toLowerCase();
+      const raw = (text || "").trim();
+      const cmd = raw.toLowerCase();
       if (!cmd) return;
-      document.getElementById("commandInput").value = "";
+      const cmdInput = document.getElementById("commandInput");
+      if (cmdInput) cmdInput.value = "";
 
-      if (cmd.includes("rank") || cmd.includes("top") || cmd.includes("feasible")) {
-        this.runScenario1();
-      } else if (cmd.includes("audit") || cmd.includes("rules") || cmd.includes("provenance")) {
+      if (cmd.includes("audit") || cmd.includes("rules") || cmd.includes("provenance")) {
         this.runScenario2();
       } else if (cmd.includes("diff") || cmd.includes("change") || cmd.includes("risk")) {
         this.runScenario3();
@@ -745,9 +1002,27 @@ Official Rules & FAQ Updates:
         this.runScenario4();
       } else if (cmd.includes("sync")) {
         this.syncCatalog();
+      } else if (
+        cmd.includes("find") ||
+        cmd.includes("best") ||
+        cmd.includes("top") ||
+        cmd.includes("rank") ||
+        cmd.includes("recommend") ||
+        cmd.includes("feasible") ||
+        cmd.includes("zero") ||
+        cmd.includes("budget") ||
+        cmd.includes("match")
+      ) {
+        this.switchTab("opportunityDeck");
+        this.sortFeasibility = true;
+        const sortBtn = document.getElementById("sortFeasibilityBtn");
+        if (sortBtn) sortBtn.classList.add("active");
+        this.handleSearch(raw);
+        this.speak(`Searching and ranking hackathons for '${raw}'.`);
       } else {
-        this.handleSearch(cmd);
-        this.speak(`Searching catalog for '${cmd}'.`);
+        this.switchTab("opportunityDeck");
+        this.handleSearch(raw);
+        this.speak(`Searching catalog for '${raw}'.`);
       }
     }
   }

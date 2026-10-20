@@ -255,6 +255,19 @@ def test_mcp_resources():
     assert "contents" in r_res["result"]
     assert len(r_res["result"]["contents"]) > 0
 
+    # Read active profile resource
+    prof_payload = {
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "resources/read",
+        "params": {"uri": "hackpulse://profile/active"},
+    }
+    p_res = client.post("/mcp", json=prof_payload).json()
+    assert "contents" in p_res["result"]
+    prof_text = p_res["result"]["contents"][0]["text"]
+    assert "Demo Builder (CSE Student)" in prof_text
+    assert "Avanish" not in prof_text
+
 
 def test_mcp_prompts():
     list_payload = {
@@ -301,6 +314,8 @@ def test_tool_manage_builder_profile():
     res = client.post("/mcp", json=get_payload).json()
     prof = json.loads(res["result"]["content"][0]["text"])
     assert prof["profile_id"] == "default"
+    assert prof["name"] == "Demo Builder (CSE Student)"
+    assert "Avanish" not in prof["name"]
     assert prof["country"] == "India"
     assert prof["hours_per_week"] == 15
     assert prof["budget_inr"] == 0.0
@@ -394,6 +409,10 @@ def test_tool_generate_sprint_plan_and_toggle():
     assert len(plan["milestones"]) == 5
     assert "Hour 6" in plan["go_no_go_checkpoint"]
     assert "reuse" in plan["reuse_compliance_note"].lower()
+    # Newly generated plan must default to all milestones unchecked
+    assert plan["completed_milestones"] == 0
+    for m in plan["milestones"]:
+        assert m["completed"] is False
 
     # 2. Toggle milestone M3 (Centre-Stage Multimodal UI)
     toggle_payload = {
@@ -409,7 +428,7 @@ def test_tool_generate_sprint_plan_and_toggle():
     t_plan = t_res["result"]["structuredContent"]["data"]
     m3 = next(m for m in t_plan["milestones"] if m["id"] == "M3")
     assert m3["completed"] is True
-    assert t_plan["completed_milestones"] == 3
+    assert t_plan["completed_milestones"] == 1
 
 
 def test_web_app_index_serves_alexa_multimodal():
@@ -420,3 +439,479 @@ def test_web_app_index_serves_alexa_multimodal():
     assert "HackPulse Alexa+" in html_text
     assert "Opportunity Deck" in html_text
     assert "Wire Inspector" in html_text
+    assert "Demo Builder (CSE Student)" in html_text
+    assert "Avanish" not in html_text
+
+    # Verify static app.js has generic demo narration without personal name
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    assert "Avanish" not in js_resp.text
+    assert "the demo builder" in js_resp.text
+    assert "getAmazonHackathon" in js_resp.text
+    assert "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8" in js_resp.text
+
+
+def test_judge_scenarios_target_amazon_hackathon():
+    amazon_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+    expected_title = "Build, Ship, Shape: Amazon Developer Hackathon"
+
+    # 1. Scenario 2: Audit Amazon Hackathon Rules & Provenance
+    audit_res = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {"name": "audit_rules", "arguments": {"identifier": amazon_id, "force_live": True}},
+        },
+    ).json()
+    audit_data = json.loads(audit_res["result"]["content"][0]["text"])
+    assert audit_data["hackathon_id"] == amazon_id
+    assert audit_data["title"] == expected_title
+    assert "verification_status" in audit_data
+
+    # 2. Scenario 3: Detect Listing vs Official Rule Diffs
+    candidate_rules = """
+Official Rules & FAQ Updates:
+- Deadline Precision: Submissions close exactly at 12:00 PM PDT (noon), not midnight.
+- Protocol Requirement: Server must implement MCP 2025-11-25 Streamable HTTP on /mcp.
+- AWS Credits: AWS developer promotion closed; participants must use existing accounts or zero-cost hosting tiers.
+- Testing Requirement: Testing via self-built simulator or web UI explicitly permitted.
+- Mandatory Hosting: Server endpoint must remain live and accessible through November 20 judging period.
+    """.strip()
+
+    diff_res = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "diff_rules",
+                "arguments": {"identifier": amazon_id, "new_rule_text": candidate_rules},
+            },
+        },
+    ).json()
+    diff_data = json.loads(diff_res["result"]["content"][0]["text"])
+    assert diff_data["hackathon_id"] == amazon_id
+    assert diff_data["title"] == expected_title
+    assert diff_data["has_changes"] is True
+    assert diff_data["risk_level"] == "HIGH"
+
+    # 3. Scenario 4: Build & Persist 15-Hour Sprint Plan
+    plan_res = client.post(
+        "/mcp",
+        json={
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "generate_sprint_plan",
+                "arguments": {"hackathon_id": amazon_id, "available_hours": 15},
+            },
+        },
+    ).json()
+    plan_data = plan_res["result"]["structuredContent"]["data"]
+    assert plan_data["hackathon_id"] == amazon_id
+    assert plan_data["title"] == expected_title
+    assert plan_data["total_hours"] == 15
+    assert len(plan_data["milestones"]) == 5
+
+
+def test_natural_language_search_query():
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 101,
+        "method": "tools/call",
+        "params": {
+            "name": "search_hackathons",
+            "arguments": {
+                "query": "Find the best online hackathons for a zero-rupee budget",
+                "limit": 10,
+            },
+        },
+    }
+    response = client.post("/mcp", json=payload)
+    assert response.status_code == 200
+    res = response.json()
+    assert "structuredContent" in res["result"]
+    items = res["result"]["structuredContent"]["data"]["hackathons"]
+    assert len(items) > 0
+    # Verify natural language query filtered for Online hackathons
+    for h in items:
+        assert "online" in h["location"].lower()
+    # Feasibility scores should be sorted descending
+    scores = [h.get("feasibility_score", 0) for h in items]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_rules_audit_differentiation_and_honest_provenance():
+    amazon_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+
+    # Search for a second, non-Amazon hackathon
+    s_res = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 102,
+        "method": "tools/call",
+        "params": {"name": "search_hackathons", "arguments": {"query": "Meta", "limit": 1}},
+    }).json()
+    meta_item = s_res["result"]["structuredContent"]["data"]["hackathons"][0]
+    meta_id = meta_item["id"]
+    assert meta_id != amazon_id
+
+    # Audit Amazon
+    res_amazon = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 103,
+        "method": "tools/call",
+        "params": {"name": "audit_rules", "arguments": {"identifier": amazon_id}},
+    }).json()
+    data_amazon = res_amazon["result"]["structuredContent"]["data"]
+
+    # Audit Meta
+    res_meta = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 104,
+        "method": "tools/call",
+        "params": {"name": "audit_rules", "arguments": {"identifier": meta_id}},
+    }).json()
+    data_meta = res_meta["result"]["structuredContent"]["data"]
+
+    # Provenance honesty check
+    if data_amazon["verification_status"] == "fallback_unverified":
+        assert "fallback" in data_amazon["notes"].lower() or "unavailable" in data_amazon["notes"].lower()
+    if data_meta["verification_status"] == "fallback_unverified":
+        assert "fallback" in data_meta["notes"].lower() or "unavailable" in data_meta["notes"].lower()
+
+    # Rule categories must be differentiated, not identical canned text
+    cats_amazon = data_amazon["categories"]
+    cats_meta = data_meta["categories"]
+    assert cats_amazon["eligibility"] != cats_meta["eligibility"]
+    assert cats_amazon["submission_requirements"] != cats_meta["submission_requirements"]
+    assert cats_amazon["hosting_requirements"] != cats_meta["hosting_requirements"]
+    assert "Amazon" in cats_amazon["hosting_requirements"]
+
+
+def test_sprint_plan_differentiation_and_hour_scaling():
+    amazon_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+
+    # Search for a non-Amazon hackathon
+    s_res = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 105,
+        "method": "tools/call",
+        "params": {"name": "search_hackathons", "arguments": {"query": "Meta", "limit": 1}},
+    }).json()
+    meta_item = s_res["result"]["structuredContent"]["data"]["hackathons"][0]
+    meta_id = meta_item["id"]
+
+    # Amazon 10h plan
+    res_amz_10 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 106,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": amazon_id, "available_hours": 10}},
+    }).json()
+    amz_plan_10 = res_amz_10["result"]["structuredContent"]["data"]
+    assert amz_plan_10["total_hours"] == 10
+    assert sum(m["hours"] for m in amz_plan_10["milestones"]) == 10
+    assert "Hour 4" in amz_plan_10["go_no_go_checkpoint"]
+
+    # Meta 25h plan
+    res_meta_25 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 107,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": meta_id, "available_hours": 25}},
+    }).json()
+    meta_plan_25 = res_meta_25["result"]["structuredContent"]["data"]
+    assert meta_plan_25["total_hours"] == 25
+    assert sum(m["hours"] for m in meta_plan_25["milestones"]) == 25
+    assert "Hour 10" in meta_plan_25["go_no_go_checkpoint"]
+
+    # Milestones must be domain-differentiated
+    amz_m2 = amz_plan_10["milestones"][1]["description"]
+    meta_m2 = meta_plan_25["milestones"][1]["description"]
+    assert amz_m2 != meta_m2
+    assert any("Alexa+" in m["title"] or "Alexa+" in m["description"] for m in amz_plan_10["milestones"])
+    assert "MCP" in amz_m2
+
+
+def test_frontend_voice_gc_protection_and_filter_reset():
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    js_text = js_resp.text
+
+    # 1. Voice playback GC protection and chromium cancel race guard
+    assert "_activeUtterance" in js_text
+    assert "window._activeUtterance" in js_text
+    assert "speechSynthesis.speaking" in js_text
+    assert "setTimeout" in js_text
+
+    # 2. Conditional Amazon warning in renderAuditBoard
+    assert "isAmazonEvent" in js_text
+    assert "amazonWarningHtml" in js_text
+
+    # 3. Filter reset & search unfreezing
+    assert "resetFilters" in js_text
+    assert "updateResetButtonVisibility" in js_text
+    assert "resetSearchBtn" in js_text or "resetSearchBtn" in client.get("/").text
+
+    # 4. Scenario unfreezing (resets searchQuery)
+    assert 'this.searchQuery = ""' in js_text
+
+
+def test_sprint_plan_isolation_and_initial_defaults():
+    """Verifies that newly generated plans default to all milestones unchecked,
+    modifying one hackathon's milestones does NOT affect another hackathon,
+    and completion state persists independently across reloads.
+    """
+    import uuid
+    hack_a = f"hack_iso_a_{uuid.uuid4().hex[:6]}"
+    hack_b = f"hack_iso_b_{uuid.uuid4().hex[:6]}"
+
+    # 1. Create plan for Hackathon A - must default to all unchecked (completed: False)
+    res_a1 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 201,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_a, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_a1["hackathon_id"] == hack_a
+    assert res_a1["completed_milestones"] == 0
+    assert all(m["completed"] is False for m in res_a1["milestones"])
+
+    # 2. Create plan for Hackathon B - must also default to all unchecked
+    res_b1 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 202,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_b, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_b1["hackathon_id"] == hack_b
+    assert res_b1["completed_milestones"] == 0
+    assert all(m["completed"] is False for m in res_b1["milestones"])
+
+    # 3. Check milestone M1 and M2 in Hackathon A
+    client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 203,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_a, "completed_milestone_id": "M1"}},
+    })
+    res_a2 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 204,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_a, "completed_milestone_id": "M2"}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_a2["completed_milestones"] == 2
+    completed_ids_a = [m["id"] for m in res_a2["milestones"] if m["completed"]]
+    assert completed_ids_a == ["M1", "M2"]
+
+    # 4. Verify Hackathon B is completely unchanged (still 0 completed milestones)
+    res_b2 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 205,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_b, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_b2["hackathon_id"] == hack_b
+    assert res_b2["completed_milestones"] == 0
+    assert all(m["completed"] is False for m in res_b2["milestones"])
+
+    # 5. Check milestone M4 in Hackathon B
+    res_b3 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 206,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_b, "completed_milestone_id": "M4"}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_b3["completed_milestones"] == 1
+    assert next(m["completed"] for m in res_b3["milestones"] if m["id"] == "M4") is True
+
+    # 6. Verify Hackathon A retained its own progress (M1 and M2 checked, M4 unchecked)
+    res_a3 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 207,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": hack_a, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_a3["completed_milestones"] == 2
+    assert [m["id"] for m in res_a3["milestones"] if m["completed"]] == ["M1", "M2"]
+    assert next(m["completed"] for m in res_a3["milestones"] if m["id"] == "M4") is False
+
+
+def test_speech_recognition_frontend_wiring_and_error_handling():
+    """Verifies that static/app.js implements clean speech recognition lifecycle:
+    lazy activation, user-reviewable input, error handling, and audio coordination.
+    """
+    js_resp = client.get("/static/app.js")
+    assert js_resp.status_code == 200
+    js_text = js_resp.text
+
+    # 1. Lazy activation (no microphone access requested on page load)
+    assert "getSpeechRecognition" in js_text
+    assert "SpeechClass" in js_text
+    assert "lazy" in js_text.lower() or "toggleSpeechRecognition" in js_text
+
+    # 2. Inserting readable text into command input for user review/editing
+    assert "cmdInput.value = transcript" in js_text
+    assert "cmdInput.focus()" in js_text
+    # Must NOT automatically submit/clear on recognition result
+    assert "this.handleCommand(transcript)" not in js_text
+
+    # 3. Comprehensive error reporting for microphone events
+    assert "not-allowed" in js_text
+    assert "no-speech" in js_text
+    assert "audio-capture" in js_text
+    assert "network" in js_text
+    assert "aborted" in js_text
+    # Brave-specific actionable guidance
+    assert "Brave blocks Google Speech" in js_text or "brave://settings/privacy" in js_text
+    assert "cmdInput.focus()" in js_text
+
+    # 4. Speech synthesis and recognition coordination
+    # TTS must not play while user is actively recording into the microphone
+    assert "if (this.isListening)" in js_text
+    # Starting recognition must cancel any ongoing TTS
+    assert "window.speechSynthesis.cancel()" in js_text
+
+    # 5. Clean state cleanup onend and onerror
+    assert "rec.onend" in js_text
+    assert "rec.onerror" in js_text
+    assert "updateMicUI(false)" in js_text
+
+
+def test_anti_caching_headers_for_browser_runtime():
+    """Verifies that index and static assets emit strict anti-caching headers."""
+    resp_index = client.get("/")
+    assert resp_index.status_code == 200
+    cache_ctrl = resp_index.headers.get("cache-control", "")
+    assert "no-cache" in cache_ctrl
+    assert "no-store" in cache_ctrl
+
+    resp_static = client.get("/static/app.js")
+    assert resp_static.status_code == 200
+    static_cache_ctrl = resp_static.headers.get("cache-control", "")
+    assert "no-cache" in static_cache_ctrl
+    assert "no-store" in static_cache_ctrl
+
+
+def test_sprint_plan_progress_calculation_and_real_isolation():
+    """Verifies that:
+    1. Sprint progress is mathematically calculated from actual milestone completion count.
+    2. Newly generated plans start at 0% with 0 completed milestones.
+    3. Toggling M1 produces exactly 20%, M2 produces 40%, etc.
+    4. Nebius, Meta VR, and Amazon hackathons maintain independent persisted states.
+    """
+    nebius_id = "f7ef434afdaf86a0ce6f761098a0baaa3830decace5bb41cf6fc2bf47c6e6dde"
+    meta_id = "b5946c918f7d9c8b115319c3714c2347b822d72a6631288d201a8904a2477378"
+    amazon_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+
+    # Step 1: Query sprint plans for all three - verify none start with erroneous 40%
+    for target_id in [nebius_id, meta_id, amazon_id]:
+        res = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 301,
+            "method": "tools/call",
+            "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": target_id, "available_hours": 15}},
+        }).json()
+        plan = res["result"]["structuredContent"]["data"]
+        assert plan["hackathon_id"] == target_id
+        # Must NOT default to 40%
+        assert plan["progress_percent"] == 0
+        assert plan["completed_milestones"] == 0
+        assert all(m["completed"] is False for m in plan["milestones"])
+
+    # Step 2: Toggle M1 on Amazon -> progress must be exactly 20%
+    res_amz_m1 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 302,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": amazon_id, "completed_milestone_id": "M1"}},
+    }).json()["result"]["structuredContent"]["data"]
+    assert res_amz_m1["progress_percent"] == 20
+    assert res_amz_m1["completed_milestones"] == 1
+    assert next(m["completed"] for m in res_amz_m1["milestones"] if m["id"] == "M1") is True
+    assert next(m["completed"] for m in res_amz_m1["milestones"] if m["id"] == "M2") is False
+
+    # Step 3: Toggle M2 on Amazon -> progress must be exactly 40%
+    res_amz_m2 = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 303,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": amazon_id, "completed_milestone_id": "M2"}},
+    }).json()["result"]["structuredContent"]["data"]
+    assert res_amz_m2["progress_percent"] == 40
+    assert res_amz_m2["completed_milestones"] == 2
+    assert next(m["completed"] for m in res_amz_m2["milestones"] if m["id"] == "M1") is True
+    assert next(m["completed"] for m in res_amz_m2["milestones"] if m["id"] == "M2") is True
+
+    # Step 4: Verify Nebius and Meta VR are completely untouched and remain at 0%
+    res_neb = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 304,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": nebius_id, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+    assert res_neb["hackathon_id"] == nebius_id
+    assert res_neb["progress_percent"] == 0
+    assert res_neb["completed_milestones"] == 0
+    assert all(m["completed"] is False for m in res_neb["milestones"])
+
+    res_meta = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 305,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": meta_id, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+    assert res_meta["hackathon_id"] == meta_id
+    assert res_meta["progress_percent"] == 0
+    assert res_meta["completed_milestones"] == 0
+    assert all(m["completed"] is False for m in res_meta["milestones"])
+
+    # Step 5: Untoggle M1 on Amazon -> progress drops to 20%
+    res_amz_un = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 306,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": amazon_id, "completed_milestone_id": "M1"}},
+    }).json()["result"]["structuredContent"]["data"]
+    assert res_amz_un["progress_percent"] == 20
+    assert res_amz_un["completed_milestones"] == 1
+    assert next(m["completed"] for m in res_amz_un["milestones"] if m["id"] == "M1") is False
+    assert next(m["completed"] for m in res_amz_un["milestones"] if m["id"] == "M2") is True
+
+    # Step 6: Untoggle M2 on Amazon -> returns to clean 0%
+    res_amz_clean = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 307,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": amazon_id, "completed_milestone_id": "M2"}},
+    }).json()["result"]["structuredContent"]["data"]
+    assert res_amz_clean["progress_percent"] == 0
+    assert res_amz_clean["completed_milestones"] == 0
+    assert all(m["completed"] is False for m in res_amz_clean["milestones"])
+
+
+def test_canonical_hackathon_id_resolution():
+    """Verifies that calling generate_sprint_plan by title or canonical ID maps to the exact same canonical record."""
+    title = "Build, Ship, Shape: Amazon Developer Hackathon"
+    canonical_id = "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"
+
+    res_by_title = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 308,
+        "method": "tools/call",
+        "params": {"name": "generate_sprint_plan", "arguments": {"hackathon_id": title, "available_hours": 15}},
+    }).json()["result"]["structuredContent"]["data"]
+
+    assert res_by_title["hackathon_id"] == canonical_id
+    assert res_by_title["title"] == title

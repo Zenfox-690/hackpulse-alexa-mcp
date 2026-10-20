@@ -26,9 +26,9 @@
     <!-- Persistent Cross-Session Builder Profile Bar -->
     <div class="profile-bar" id="profileBar">
       <div class="profile-info">
-        <span class="profile-name" id="profileName">Avanish (B.Tech CSE)</span>
-        <span class="profile-tag">India</span>
-        <span class="profile-skills-pill" title="Python, Playwright, SQLite, FastAPI, MCP">Python • Playwright • SQLite • MCP</span>
+        <span class="profile-name" id="profileName">Demo Builder (CSE Student)</span>
+        <span class="profile-tag" id="profileCountry">India</span>
+        <span class="profile-skills-pill" id="profileSkills" title="Python, Playwright, SQLite, FastAPI, MCP">Python • Playwright • SQLite • MCP</span>
       </div>
       <div class="profile-controls">
         <div class="hours-selector" title="Adjust available hours per week">
@@ -37,7 +37,7 @@
           <button class="pill-btn active" data-hours="15" onclick="window.app.updateProfileHours(15)">15h</button>
           <button class="pill-btn" data-hours="25" onclick="window.app.updateProfileHours(25)">25h</button>
         </div>
-        <div class="budget-pill" title="Target Budget">₹0 Budget</div>
+        <div class="budget-pill" id="profileBudget" title="Target Budget">₹0 Budget</div>
         <button class="toggle-pill active" id="onlineOnlyToggle" onclick="window.app.toggleOnlineOnly()" title="Toggle Online Only filter">
           <span class="toggle-dot"></span> Online Only (₹0)
         </button>
@@ -93,6 +93,7 @@
             <button class="chip" data-source="Devpost" onclick="window.app.setSourceFilter('Devpost')">Devpost</button>
             <button class="chip" data-source="Devfolio" onclick="window.app.setSourceFilter('Devfolio')">Devfolio</button>
             <button class="chip" data-source="Unstop" onclick="window.app.setSourceFilter('Unstop')">Unstop</button>
+            <button id="resetSearchBtn" class="chip" style="display:none; color:var(--alexa-cyan); border-color:var(--alexa-cyan);" onclick="window.app.resetFilters()">✕ Clear Search</button>
           </div>
         </div>
         <div class="sort-bookmark-group">
@@ -205,6 +206,6 @@
     </div>
   </aside>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2.0.1"></script>
 </body>
 </html>
