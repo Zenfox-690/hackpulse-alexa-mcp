@@ -31,7 +31,7 @@ jobs:
 
       - name: Run Pytest Suite
         run: |
-          pytest tests/test_mcp_e2e.py -v
+          python -m pytest tests/test_mcp_e2e.py -v
 
   keepalive:
     name: Endpoint Keep-Alive Ping (Nov 9-20 Judging)
