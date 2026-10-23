@@ -965,7 +965,9 @@ def test_grounded_command_routing_and_responsive_styles():
     4. Landing page honestly identifies as an Echo Show 15 Multimodal Simulator.
     """
     from core.database import query_hackathons
-    catalog = query_hackathons(limit=30)
+    # Use a generous limit to capture a representative slice of the live catalog.
+    # After live discovery, the catalog may contain 150+ open hackathons.
+    catalog = query_hackathons(limit=200)
     assert len(catalog) > 0
 
     # Extract command stopwords defined in static/app.js
@@ -1141,3 +1143,279 @@ def test_honest_reporting_of_audit_status_and_provenance():
     assert "Rule audit failed" in rule_audit_section
     # Verify it does not unconditionally announce "with verified provenance"
     assert "with verified provenance. Reviewing eligibility" not in js_text
+
+
+def test_official_event_urls_and_hackathon_brief_wiring():
+    """Verifies that:
+    1. Every catalog hackathon contains an authoritative official event URL.
+    2. static/index.html includes the contextual Hackathon Brief drawer and custom hours controls.
+    3. static/app.js exposes official event URLs with safe target='_blank' and Hackathon Brief actions.
+    """
+    from core.database import query_hackathons
+    catalog = query_hackathons(limit=30)
+    assert len(catalog) > 0
+
+    # 1. Authoritative URL verification
+    for h in catalog:
+        assert "url" in h
+        assert h["url"].startswith("http://") or h["url"].startswith("https://")
+        assert len(h["url"]) > 10
+
+    # 2. HTML template verification
+    html = client.get("/").text
+    assert "id=\"hackathonBriefDrawer\"" in html
+    assert "id=\"briefModalBackdrop\"" in html
+    assert "id=\"customHoursInput\"" in html
+    assert "formatChips" in html
+    assert "statusChips" in html
+
+    # 3. JS application logic verification
+    js = client.get("/static/app.js").text
+    assert "openHackathonBrief" in js
+    assert "closeHackathonBrief" in js
+    assert "renderHackathonBrief" in js
+    assert "official-url-link" in js
+    assert "target=\"_blank\"" in js
+    assert "rel=\"noopener noreferrer\"" in js
+    assert "handleCustomHoursSubmit" in js
+
+
+def test_custom_hours_sprint_plan_and_profile_integration():
+    """Verifies that custom weekly hours (e.g. 22h/week) correctly:
+    1. Update and persist in the builder profile.
+    2. Proving that hours represent weekly commitment, scale sprint plan milestones proportionally to 22h.
+    """
+    from core.database import generate_or_update_sprint_plan
+
+    # 1. Update builder profile with custom 22 hours
+    prof_res = client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 701,
+        "method": "tools/call",
+        "params": {
+            "name": "manage_builder_profile",
+            "arguments": {"action": "update", "hours_per_week": 22},
+        },
+    }).json()["result"]["structuredContent"]["data"]
+    assert prof_res["hours_per_week"] == 22
+
+    # 2. Generate sprint plan for 22 hours
+    plan = generate_or_update_sprint_plan(
+        hackathon_id="0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8",
+        available_hours=22,
+    )
+    assert plan["hours_per_week"] == 22
+    assert plan["total_hours"] == 22
+    # Milestones must sum to total hours
+    sum_hours = sum(m["hours"] for m in plan["milestones"])
+    assert sum_hours == 22
+
+    # Clean up state: restore default profile hours to 15
+    client.post("/mcp", json={
+        "jsonrpc": "2.0",
+        "id": 702,
+        "method": "tools/call",
+        "params": {
+            "name": "manage_builder_profile",
+            "arguments": {"action": "update", "hours_per_week": 15},
+        },
+    })
+
+
+
+def test_format_and_status_filtering_contracts():
+    """Verifies that query_hackathons cleanly filters by participation format and status
+    without corrupting search ranking or feasibility scores.
+    """
+    from core.database import query_hackathons
+
+    online_items = query_hackathons(location="Online", limit=20)
+    assert len(online_items) > 0
+    assert all("online" in (h.get("location") or "").lower() for h in online_items)
+
+    in_person_items = query_hackathons(location="In-Person", limit=20)
+    assert len(in_person_items) > 0
+    assert all("in-person" in (h.get("location") or "").lower() for h in in_person_items)
+
+    open_items = query_hackathons(status="open", limit=20)
+    assert len(open_items) > 0
+    assert all((h.get("status") or "").lower() == "open" for h in open_items)
+
+
+def test_critical_data_integrity_and_registration_status_regression():
+    """Targeted regression tests for P0, P1, and P2 data integrity fixes:
+    1. A confirmed-closed Unstop opportunity is not presented as confirmed open.
+    2. An unknown registration status remains unknown (never falsely promoted to open).
+    3. A confirmed-open event remains discoverable.
+    4. A future event date does not automatically imply open registration.
+    5. A registration deadline is not confused with an event start date.
+    6. Missing or ambiguous date fields remain unknown rather than being fabricated.
+    7. Devfolio date normalization preserves distinction between event dates and registration deadlines.
+    8. Existing search and source/format filters continue to work cleanly.
+    9. Existing HackPulse MCP tools and API contracts remain functional.
+    10. Audit, rule diff, event brief, and sprint planner still operate seamlessly.
+    """
+    from datetime import datetime, timezone
+    from core.database import (
+        normalize_event_dates_and_status,
+        query_hackathons,
+        get_hackathon,
+    )
+
+    now_ref = datetime(2026, 10, 23, 12, 0, 0, tzinfo=timezone.utc)
+
+    # 1. Confirmed-closed Unstop status is not normalized to open (unit test via normalize_event_dates_and_status)
+    # This verifies the fix for the P0 regression: closed Unstop records must not be falsely promoted.
+    # We test normalization directly rather than assuming the production DB has zero open Unstop records
+    # (after live discovery, genuinely open Unstop opportunities exist in the catalog).
+    closed_unstop = normalize_event_dates_and_status({
+        "title": "Closed Unstop Hackathon (reg_status=CLOSED)",
+        "status": "open",  # Source-reported status
+        "reg_starts_at": "2026-09-01T00:00:00+00:00",
+        "reg_ends_at": "2026-10-01T00:00:00+00:00",  # Deadline PAST as of now_ref (2026-10-23)
+        "starts_at": "2026-10-15T00:00:00+00:00",
+        "ends_at": "2026-10-30T00:00:00+00:00",  # Event still future
+    }, now=now_ref)
+    assert closed_unstop["status"] in ["closed", "ended"], (
+        f"Closed Unstop hackathon with past reg deadline must not remain 'open', got: {closed_unstop['status']}"
+    )
+
+    # Verify that genuinely open Unstop hackathons CAN appear in the catalog after live discovery
+    unstop_all = query_hackathons(source="Unstop", limit=20)
+    assert len(unstop_all) > 0, "Unstop hackathons should exist in catalog"
+
+    # Any Unstop record returned with open status must have a non-past reg deadline
+    unstop_open = query_hackathons(source="Unstop", status="open", limit=100)
+    for uh in unstop_open:
+        assert uh["status"] == "open", f"query status='open' must only return open records, got: {uh['status']}"
+        # Registration deadline must be in the future (or empty)
+        if uh.get("reg_ends_at"):
+            from core.database import parse_event_datetime
+            dt = parse_event_datetime(uh["reg_ends_at"])
+            if dt:
+                assert dt > now_ref, (
+                    f"Open Unstop hackathon '{uh['title']}' has past reg_ends_at={uh['reg_ends_at']}"
+                )
+
+    # 2. Unknown registration status remains unknown (never assumed open)
+    norm_unknown = normalize_event_dates_and_status({
+        "title": "Unverified Community Hackathon",
+        "status": "unknown",
+        "deadline": "",
+    }, now=now_ref)
+    assert norm_unknown["status"] == "unknown"
+
+    norm_empty = normalize_event_dates_and_status({
+        "title": "No Status Hackathon",
+        "status": "",
+        "deadline": "",
+    }, now=now_ref)
+    assert norm_empty["status"] == "unknown"
+
+    # 3. Confirmed-open events remain discoverable
+    open_items = query_hackathons(status="open", limit=30)
+    assert len(open_items) > 0
+    assert all(h["status"] == "open" for h in open_items)
+    # Check that open items are discoverable by title
+    top_open = open_items[0]
+    searched = query_hackathons(query=top_open["title"], status="open", limit=5)
+    assert any(s["id"] == top_open["id"] for s in searched)
+
+    # 4. A future event date does NOT automatically imply open registration
+    future_event_closed_reg = normalize_event_dates_and_status({
+        "title": "Hackathon with Closed Reg but Future Hacking",
+        "reg_ends_at": "2026-10-15T00:00:00+00:00",
+        "starts_at": "2026-11-20T00:00:00+00:00",
+        "ends_at": "2026-11-22T00:00:00+00:00",
+        "status": "open",
+    }, now=now_ref)
+    assert future_event_closed_reg["status"] == "closed", "Registration passed but future hacking date -> status is closed (not ended)"
+
+    future_event_unknown_status = normalize_event_dates_and_status({
+        "title": "Unknown Status with Future Event Dates",
+        "starts_at": "2026-12-01T00:00:00+00:00",
+        "status": "unknown",
+    }, now=now_ref)
+    assert future_event_unknown_status["status"] == "unknown", "Future event date must not convert unknown status into open"
+
+    # 5. A registration deadline is not confused with an event start date
+    norm_distinct = normalize_event_dates_and_status({
+        "title": "Distinct Dates Event",
+        "reg_ends_at": "2026-10-25T18:00:00+00:00",
+        "starts_at": "2026-11-05T09:00:00+00:00",
+        "ends_at": "2026-11-07T18:00:00+00:00",
+        "status": "open",
+    }, now=now_ref)
+    assert norm_distinct["reg_ends_at"] == "2026-10-25T18:00:00+00:00"
+    assert norm_distinct["starts_at"] == "2026-11-05T09:00:00+00:00"
+    assert norm_distinct["ends_at"] == "2026-11-07T18:00:00+00:00"
+    assert norm_distinct["reg_ends_at"] != norm_distinct["starts_at"]
+
+    # 6. Missing or ambiguous date fields remain unknown rather than fabricated
+    norm_ambiguous = normalize_event_dates_and_status({
+        "title": "TBA Dates Event",
+        "deadline": "TBA",
+        "reg_ends_at": "",
+        "starts_at": "Unknown",
+        "ends_at": "",
+        "status": "unknown",
+    }, now=now_ref)
+    assert norm_ambiguous["reg_ends_at"] == ""
+    assert norm_ambiguous["starts_at"] == "Unknown"
+    assert norm_ambiguous["status"] == "unknown"
+
+    # 7. Devfolio date normalization preserves distinction between event dates and registration deadlines
+    bios = get_hackathon("BIOS V2")
+    assert bios is not None
+    assert bios["source"] == "Devfolio"
+    # Registration deadline was Oct 19, 2026
+    assert "2026-10-19" in bios["reg_ends_at"]
+    # Event hacking period is Oct 30 - Nov 01, 2026
+    assert "2026-10-30" in bios["starts_at"]
+    assert "2026-11-01" in bios["ends_at"]
+    # Since reg_ends_at is in the past but ends_at is in the future, status is closed
+    assert bios["status"] == "closed"
+
+    arkiv = get_hackathon("Arkiv: Global Tour Stop")
+    assert arkiv is not None
+    assert "2026-10-18" in arkiv["reg_ends_at"]
+    assert arkiv["status"] == "ended"
+
+    # 8. Existing search and source/format filters continue to work
+    devpost_online = query_hackathons(source="Devpost", location="Online", limit=10)
+    assert len(devpost_online) > 0
+    assert all(h["source"].lower() == "devpost" for h in devpost_online)
+    assert all("online" in h["location"].lower() for h in devpost_online)
+
+    # 9. Existing HackPulse MCP tools and API contracts remain functional
+    for tool_name, tool_args in [
+        ("search_hackathons", {"query": "AI", "limit": 5}),
+        ("get_hackathon_details", {"identifier": "BIOS V2"}),
+        ("audit_rules", {"identifier": "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8", "force_live": False}),
+        ("diff_rules", {"identifier": "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"}),
+        ("generate_sprint_plan", {"hackathon_id": "0e18b6cf877bc442f9b92302350398fce6b84b05d01ac2f92ff5367616b259a8"}),
+    ]:
+        res = client.post("/mcp", json={
+            "jsonrpc": "2.0",
+            "id": 901,
+            "method": "tools/call",
+            "params": {"name": tool_name, "arguments": tool_args},
+        }).json()
+        assert "result" in res, f"Tool {tool_name} failed: {res}"
+        assert res["result"].get("isError") is False, f"Tool {tool_name} returned error"
+
+    # 10. Frontend contract verification
+    html = client.get("/").text
+    assert "chipConfirmedOpen" in html
+    assert "chipIncludeClosed" in html
+    assert "statusChips" in html
+    assert "formatChips" in html
+
+    js = client.get("/static/app.js").text
+    assert "setStatusScope" in js
+    assert "formatCardDate" in js
+    assert "formatEventRange" in js
+    assert "Reg Closes:" in js
+    assert "reg-deadline" in js
+
+

@@ -14,12 +14,14 @@ from core.database import (
     generate_or_update_sprint_plan,
     get_builder_profile,
     get_hackathon,
+    get_refresh_status,
     load_seed_if_empty,
     query_hackathons,
     record_session,
     sync_upstream_json,
     update_builder_profile,
 )
+from core.ingestion import refresh_discovery_sources
 from core.rule_auditor import RuleAuditor
 
 PROTOCOL_VERSION = "2025-11-25"
@@ -107,6 +109,16 @@ class MCPServer:
                             "type": "boolean",
                             "description": "Whether to force reload even if catalog has items.",
                             "default": False,
+                        },
+                        "discover_live": {
+                            "type": "boolean",
+                            "description": "If true, triggers multi-source live discovery across Devpost, Devfolio, and Unstop designated sections, updates dates, and executes 30-day retention purge.",
+                            "default": False,
+                        },
+                        "retention_days": {
+                            "type": "integer",
+                            "description": "Rolling context retention duration in days for confirmed inactive events (default 30).",
+                            "default": 30,
                         },
                     },
                 },
@@ -332,6 +344,28 @@ class MCPServer:
                 }
 
             elif name == "sync_upstream_catalog":
+                discover_live = bool(arguments.get("discover_live", False))
+                if discover_live:
+                    ret_days = int(arguments.get("retention_days", 30))
+                    import asyncio
+                    refresh_res = await asyncio.to_thread(
+                        refresh_discovery_sources, db_path=self.db_path, retention_days=ret_days
+                    )
+                    voice = (
+                        f"Autonomous discovery refreshed. Discovered {refresh_res.get('total_discovered')} opportunities, "
+                        f"updated {refresh_res.get('total_updated')}, and purged {refresh_res.get('total_purged')} expired records."
+                    )
+                    return {
+                        "content": [{"type": "text", "text": json.dumps(refresh_res, indent=2)}],
+                        "structuredContent": {
+                            "stageView": "CAROUSEL",
+                            "voiceSummary": voice,
+                            "data": refresh_res,
+                        },
+                        "_meta": {"ui": {"resourceUri": "ui://hackpulse/stage-view"}},
+                        "isError": False,
+                    }
+
                 url = arguments.get("upstream_url")
                 data = None
                 is_fallback = False

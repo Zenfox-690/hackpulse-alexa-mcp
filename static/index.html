@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HackPulse Alexa+ | Centre-Stage Multimodal Assistant</title>
+  <title>HackPulse Alexa+ | Autonomous Hackathon Decision Support & Ambient Assistant</title>
+  <meta name="description" content="Echo Show 15 Multimodal Assistant and MCP 2025-11-25 Server for autonomous hackathon discovery, feasibility scoring, rule provenance auditing, risk diffs, and calibrated sprint planning.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -11,9 +12,9 @@
 </head>
 <body class="echo-show-15">
   <!-- Top Ambient Header Bar -->
-  <header class="ambient-header">
+  <header class="ambient-header" role="banner">
     <div class="brand-section">
-      <div class="alexa-orb" id="alexaOrb">
+      <div class="alexa-orb" id="alexaOrb" aria-hidden="true">
         <div class="orb-core"></div>
         <div class="orb-pulse"></div>
       </div>
@@ -24,25 +25,29 @@
     </div>
 
     <!-- Persistent Cross-Session Builder Profile Bar -->
-    <div class="profile-bar" id="profileBar">
+    <div class="profile-bar" id="profileBar" aria-label="Builder Profile Settings">
       <div class="profile-info">
         <span class="profile-name" id="profileName">Demo Builder (CSE Student)</span>
         <span class="profile-tag" id="profileCountry">India</span>
         <span class="profile-skills-pill" id="profileSkills" title="Python, Playwright, SQLite, FastAPI, MCP">Python • Playwright • SQLite • MCP</span>
       </div>
       <div class="profile-controls">
-        <div class="hours-selector" title="Adjust available hours per week">
+        <div class="hours-selector" title="Hours available per week (weekly runway commitment)">
           <span class="ctrl-label">Hours/Wk:</span>
-          <button class="pill-btn" data-hours="10" onclick="window.app.updateProfileHours(10)">10h</button>
-          <button class="pill-btn active" data-hours="15" onclick="window.app.updateProfileHours(15)">15h</button>
-          <button class="pill-btn" data-hours="25" onclick="window.app.updateProfileHours(25)">25h</button>
+          <button class="pill-btn" data-hours="10" onclick="window.app.updateProfileHours(10)" title="10 hours per week">10h</button>
+          <button class="pill-btn active" data-hours="15" onclick="window.app.updateProfileHours(15)" title="15 hours per week">15h</button>
+          <button class="pill-btn" data-hours="25" onclick="window.app.updateProfileHours(25)" title="25 hours per week">25h</button>
+          <div class="custom-hours-wrap" title="Set custom hours per week (5–60)">
+            <input type="number" id="customHoursInput" class="custom-hours-input" min="5" max="60" placeholder="Custom" aria-label="Custom weekly hours" onkeydown="if(event.key==='Enter') window.app.handleCustomHoursSubmit()">
+            <button class="pill-btn custom-set-btn" onclick="window.app.handleCustomHoursSubmit()" title="Apply custom weekly hours">Set</button>
+          </div>
         </div>
-        <div class="budget-pill" id="profileBudget" title="Target Budget">₹0 Budget</div>
-        <button class="toggle-pill active" id="onlineOnlyToggle" onclick="window.app.toggleOnlineOnly()" title="Toggle Online Only filter">
+        <div class="budget-pill" id="profileBudget" title="Hardware and Cloud Travel Budget">₹0 Budget</div>
+        <button class="toggle-pill active" id="onlineOnlyToggle" onclick="window.app.toggleOnlineOnly()" title="Filter for 100% Online events (zero travel expense)">
           <span class="toggle-dot"></span> Online Only (₹0)
         </button>
-        <button class="action-sync-btn" id="syncCatalogBtn" onclick="window.app.syncCatalog()" title="Sync upstream catalog">
-          <svg class="spin-icon" viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+        <button class="action-sync-btn" id="syncCatalogBtn" onclick="window.app.syncCatalog()" title="Sync and refresh catalog from upstream data feed">
+          <svg class="spin-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46A7.93 7.93 0 0 0 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74A7.93 7.93 0 0 0 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
           Sync
         </button>
       </div>
@@ -50,98 +55,150 @@
 
     <!-- MCP Status & Wire Inspector Toggle -->
     <div class="status-section">
-      <div class="mcp-status-pill" title="Active Model Context Protocol Server">
-        <span class="live-dot"></span>
+      <div class="mcp-status-pill" title="Active Model Context Protocol 2025-11-25 Streamable HTTP Session">
+        <span class="live-dot" aria-hidden="true"></span>
         <span class="proto-name">MCP 2025-11-25</span>
         <span class="session-id-badge" id="mcpSessionBadge">sess_init</span>
       </div>
-      <div class="catalog-count-pill" id="catalogCountPill">40 Hackathons</div>
+      <div class="catalog-count-pill" id="catalogCountPill" title="Opportunities ingested in local SQLite WAL store">40 Hackathons</div>
       <button class="wire-inspector-btn" id="wireInspectorBtn" onclick="window.app.toggleWireInspector()" title="Toggle JSON-RPC 2.0 Wire Inspector Drawer">
-        <span class="wire-icon">⚡</span> Wire <span class="wire-badge" id="wireCountBadge">0</span>
+        <span class="wire-icon" aria-hidden="true">⚡</span> Wire <span class="wire-badge" id="wireCountBadge">0</span>
       </button>
     </div>
   </header>
 
   <!-- Centre-Stage Multimodal Canvas (80% Viewport) -->
-  <main class="centre-stage">
+  <main class="centre-stage" role="main">
     <!-- Stage Switcher Tabs -->
-    <nav class="stage-nav">
-      <button class="stage-tab active" data-tab="opportunityDeck" onclick="window.app.switchTab('opportunityDeck')">
-        <span class="tab-icon">🎯</span> Opportunity Deck & Feasibility
+    <nav class="stage-nav" aria-label="Application Stage Navigation">
+      <button class="stage-tab active" data-tab="opportunityDeck" onclick="window.app.switchTab('opportunityDeck')" aria-label="Opportunity Deck and Feasibility Ranking">
+        <span class="tab-icon" aria-hidden="true">🎯</span> Opportunity Deck & Feasibility
       </button>
-      <button class="stage-tab" data-tab="ruleAuditBoard" onclick="window.app.switchTab('ruleAuditBoard')">
-        <span class="tab-icon">🛡️</span> Rule Provenance & Live Audit
+      <button class="stage-tab" data-tab="ruleAuditBoard" onclick="window.app.switchTab('ruleAuditBoard')" aria-label="Rule Provenance and Live Audit">
+        <span class="tab-icon" aria-hidden="true">🛡️</span> Rule Provenance & Live Audit
       </button>
-      <button class="stage-tab" data-tab="ruleDiffInspector" onclick="window.app.switchTab('ruleDiffInspector')">
-        <span class="tab-icon">⚡</span> Rule Change & Risk Diff
+      <button class="stage-tab" data-tab="ruleDiffInspector" onclick="window.app.switchTab('ruleDiffInspector')" aria-label="Rule Change and Risk Diff">
+        <span class="tab-icon" aria-hidden="true">⚡</span> Rule Change & Risk Diff
       </button>
-      <button class="stage-tab" data-tab="sprintPlanner" onclick="window.app.switchTab('sprintPlanner')">
-        <span class="tab-icon">🚀</span> 15h Sprint & Go/No-Go Planner
+      <button class="stage-tab" data-tab="sprintPlanner" onclick="window.app.switchTab('sprintPlanner')" aria-label="Sprint and Go/No-Go Planner">
+        <span class="tab-icon" aria-hidden="true">🚀</span> Sprint & Go/No-Go Planner
       </button>
     </nav>
 
     <!-- TAB 1: OPPORTUNITY DECK -->
-    <section class="stage-view active" id="viewOpportunityDeck">
+    <section class="stage-view active" id="viewOpportunityDeck" aria-labelledby="headingOpportunityDeck">
+      <div class="stage-header-row">
+        <div>
+          <h2 id="headingOpportunityDeck" class="stage-heading">Opportunity Discovery & Feasibility Ranking</h2>
+          <p class="stage-subheading">Autonomous discovery focused on confirmed-open hackathons calibrated to your ₹0 budget, weekly runway, and tech stack. Closed and unverified events are excluded by default.</p>
+        </div>
+      </div>
+
+      <!-- Controls & Filter Toolbar -->
       <div class="deck-controls">
         <div class="search-filter-group">
           <div class="search-box">
-            <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
-            <input type="text" id="searchInput" placeholder="Search AI, agent, cloud, voice hackathons..." oninput="window.app.handleSearch(this.value)">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+            <input type="text" id="searchInput" placeholder="Search AI, agent, cloud, voice hackathons..." oninput="window.app.handleSearch(this.value)" aria-label="Search hackathons">
           </div>
-          <div class="source-chips">
+
+          <!-- Platform / Source Chips -->
+          <div class="source-chips" id="sourceChips" title="Filter by Host Platform">
             <button class="chip active" data-source="" onclick="window.app.setSourceFilter('')">All Sources</button>
             <button class="chip" data-source="Devpost" onclick="window.app.setSourceFilter('Devpost')">Devpost</button>
             <button class="chip" data-source="Devfolio" onclick="window.app.setSourceFilter('Devfolio')">Devfolio</button>
             <button class="chip" data-source="Unstop" onclick="window.app.setSourceFilter('Unstop')">Unstop</button>
+          </div>
+
+          <!-- Format Filter Chips -->
+          <div class="source-chips format-chips" id="formatChips" title="Filter by Participation Format">
+            <button class="chip active" data-format="" onclick="window.app.setFormatFilter('')">All Formats</button>
+            <button class="chip" data-format="Online" onclick="window.app.setFormatFilter('Online')">🌐 Online</button>
+            <button class="chip" data-format="In-Person" onclick="window.app.setFormatFilter('In-Person')">📍 In-Person</button>
+          </div>
+
+          <!-- Registration Status Scope -->
+          <div class="source-chips status-chips" id="statusChips" title="Filter by Registration Status">
+            <button class="chip active" id="chipConfirmedOpen" data-status="open" onclick="window.app.setStatusScope('open')" title="Open Hackathons: Verified open registration with unpassed deadlines (Default View)">🟢 Open Hackathons</button>
+            <button class="chip" id="chipPastHackathons" data-status="past" onclick="window.app.setStatusScope('past')" title="Past Hackathons: Events confirmed to have ended within the last 30 days">🏁 Past Hackathons</button>
+            <span id="chipIncludeClosed" style="display:none;" data-status="" aria-hidden="true"></span>
             <button id="resetSearchBtn" class="chip" style="display:none; color:var(--alexa-cyan); border-color:var(--alexa-cyan);" onclick="window.app.resetFilters()">✕ Clear Search</button>
           </div>
         </div>
+
         <div class="sort-bookmark-group">
-          <button class="sort-toggle active" id="sortFeasibilityBtn" onclick="window.app.toggleSortFeasibility()">
-            <span class="sort-star">★</span> Rank by ₹0 / 15h Feasibility
+          <button class="sort-toggle active" id="sortFeasibilityBtn" onclick="window.app.toggleSortFeasibility()" title="Rank by multi-factor feasibility algorithm">
+            <span class="sort-star" aria-hidden="true">★</span> Rank by Feasibility
           </button>
-          <button class="bookmark-filter-btn" id="filterBookmarksBtn" onclick="window.app.toggleFilterBookmarks()">
+          <button class="bookmark-filter-btn" id="filterBookmarksBtn" onclick="window.app.toggleFilterBookmarks()" title="Show saved bookmarks">
             Bookmarks (<span id="bookmarkCount">1</span>)
           </button>
         </div>
       </div>
 
-      <!-- Hackathons Grid / Carousel -->
-      <div class="hackathon-grid" id="hackathonGrid">
+      <!-- 30-Day Rolling Cutoff Banner for Past Hackathons -->
+      <div class="past-cutoff-banner" id="pastCutoffBanner" style="display:none;" role="status" aria-live="polite">
+        <div class="cutoff-info">
+          <span class="cutoff-icon">📅</span>
+          <span>Showing events confirmed to have ended within the last 30 days (rolling cutoff: <strong id="cutoffDateStr"></strong>).</span>
+        </div>
+        <span class="cutoff-badge">30-Day Window</span>
+      </div>
+
+      <!-- Hackathons Grid -->
+      <div class="hackathon-grid" id="hackathonGrid" aria-live="polite">
         <div class="loading-state">Loading calibrated hackathons from MCP...</div>
       </div>
     </section>
 
     <!-- TAB 2: RULE PROVENANCE & LIVE AUDIT BOARD -->
-    <section class="stage-view" id="viewRuleAuditBoard">
+    <section class="stage-view" id="viewRuleAuditBoard" aria-labelledby="headingRuleAudit">
+      <div class="stage-header-row">
+        <div>
+          <h2 id="headingRuleAudit" class="stage-heading">Rule Provenance & Live Audit Board</h2>
+          <p class="stage-subheading">Strict verification separating live official website audits from catalogue metadata with cryptographic SHA-256 hashes.</p>
+        </div>
+      </div>
       <div class="audit-board-container" id="auditBoardContainer">
         <div class="placeholder-prompt">
-          <span class="prompt-icon">🛡️</span>
+          <span class="prompt-icon" aria-hidden="true">🛡️</span>
           <h3>No Hackathon Selected for Rule Audit</h3>
-          <p>Select any hackathon from the Opportunity Deck or click the one-click demo chip below to inspect official rules with verified provenance.</p>
+          <p>Select any hackathon card from the Opportunity Deck or click below to audit the Amazon Developer Hackathon rules with live provenance.</p>
           <button class="action-btn primary" onclick="window.app.quickAuditAlexa()">Inspect Amazon Developer Hackathon Rules</button>
         </div>
       </div>
     </section>
 
     <!-- TAB 3: RULE CHANGE & RISK DIFF INSPECTOR -->
-    <section class="stage-view" id="viewRuleDiffInspector">
+    <section class="stage-view" id="viewRuleDiffInspector" aria-labelledby="headingRuleDiff">
+      <div class="stage-header-row">
+        <div>
+          <h2 id="headingRuleDiff" class="stage-heading">Rule Change & Risk Diff Inspector</h2>
+          <p class="stage-subheading">Detect high-impact discrepancies between promotional listing summaries and official binding terms before committing development hours.</p>
+        </div>
+      </div>
       <div class="diff-container" id="diffContainer">
         <div class="placeholder-prompt">
-          <span class="prompt-icon">⚡</span>
+          <span class="prompt-icon" aria-hidden="true">⚡</span>
           <h3>Rule Diff & Risk Inspector</h3>
-          <p>Detect additions, deletions, and critical regulatory discrepancies between promotional listings and official terms.</p>
+          <p>Compare baseline descriptions against official rules to detect deadline changes, mandatory hosting terms, or deliverable adjustments.</p>
           <button class="action-btn primary" onclick="window.app.quickDiffAlexa()">Compare Amazon Listing (v1) vs Official Rules (v2)</button>
         </div>
       </div>
     </section>
 
     <!-- TAB 4: CALIBRATED SPRINT & GO/NO-GO PLANNER -->
-    <section class="stage-view" id="viewSprintPlanner">
+    <section class="stage-view" id="viewSprintPlanner" aria-labelledby="headingSprintPlanner">
+      <div class="stage-header-row">
+        <div>
+          <h2 id="headingSprintPlanner" class="stage-heading">Calibrated Sprint & Go/No-Go Planner</h2>
+          <p class="stage-subheading">Time-boxed execution schedules calibrated to your weekly runway with explicit Go/No-Go architecture checkpoints.</p>
+        </div>
+      </div>
       <div class="sprint-container" id="sprintContainer">
         <div class="placeholder-prompt">
-          <span class="prompt-icon">🚀</span>
-          <h3>15-Hour Calibrated Sprint Planner</h3>
+          <span class="prompt-icon" aria-hidden="true">🚀</span>
+          <h3>Calibrated Sprint & Go/No-Go Planner</h3>
           <p>Generate a persistent, time-boxed execution plan with explicit Go/No-Go checkpoints and milestone toggles.</p>
           <button class="action-btn primary" onclick="window.app.quickSprintAlexa()">Generate Amazon Hackathon 15h Sprint Plan</button>
         </div>
@@ -149,51 +206,66 @@
     </section>
   </main>
 
+  <!-- Contextual Slide-Over Drawer: HACKATHON BRIEF / EVENT SUMMARIZER -->
+  <div class="brief-modal-backdrop" id="briefModalBackdrop" onclick="window.app.closeHackathonBrief()" aria-hidden="true"></div>
+  <aside class="brief-drawer" id="hackathonBriefDrawer" role="dialog" aria-labelledby="briefDrawerTitle" aria-modal="true">
+    <div class="brief-drawer-header">
+      <div class="brief-title-wrap">
+        <span class="brief-eyebrow">Hackathon Brief & Executive Summary</span>
+        <h3 id="briefDrawerTitle" class="brief-title">Event Title</h3>
+      </div>
+      <button class="brief-close-btn" onclick="window.app.closeHackathonBrief()" title="Close Brief (Esc)" aria-label="Close brief">✕</button>
+    </div>
+    <div class="brief-drawer-content" id="briefDrawerContent">
+      <div class="loading-state">Synthesizing verified hackathon brief...</div>
+    </div>
+  </aside>
+
   <!-- Bottom Alexa+ Voice & One-Click Judge Scenario Bar -->
-  <footer class="ambient-footer">
+  <footer class="ambient-footer" role="contentinfo">
     <!-- One-Click Judge Demo Scenario Chips -->
-    <div class="judge-scenarios-bar">
+    <div class="judge-scenarios-bar" aria-label="Judge Demo Workflows">
       <span class="scenario-label">Judge One-Click Scenarios:</span>
-      <button class="scenario-chip" onclick="window.app.runScenario1()">🎯 1. Rank Top Matches for My ₹0 / 15h Profile</button>
-      <button class="scenario-chip" onclick="window.app.runScenario2()">🛡️ 2. Audit Amazon Hackathon Rules & Provenance</button>
-      <button class="scenario-chip" onclick="window.app.runScenario3()">⚡ 3. Detect Listing vs Official Rule Diffs</button>
-      <button class="scenario-chip" onclick="window.app.runScenario4()">🚀 4. Build & Persist 15-Hour Sprint Plan</button>
+      <button class="scenario-chip" onclick="window.app.runScenario1()" title="Run Scenario 1: Feasibility ranking for ₹0 / 15h profile">🎯 1. Rank Top Matches for My ₹0 / 15h Profile</button>
+      <button class="scenario-chip" onclick="window.app.runScenario2()" title="Run Scenario 2: Live official rules audit">🛡️ 2. Audit Amazon Hackathon Rules & Provenance</button>
+      <button class="scenario-chip" onclick="window.app.runScenario3()" title="Run Scenario 3: Listing vs official rules diff">⚡ 3. Detect Listing vs Official Rule Diffs</button>
+      <button class="scenario-chip" onclick="window.app.runScenario4()" title="Run Scenario 4: Calibrated sprint plan generation">🚀 4. Build & Persist 15-Hour Sprint Plan</button>
     </div>
 
     <!-- Alexa+ Voice / Command Interaction Bar -->
     <div class="voice-command-bar">
-      <button class="mic-btn" id="micBtn" onclick="window.app.toggleSpeechRecognition()" title="Click to speak with Alexa+">
-        <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path fill="currentColor" d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+      <button class="mic-btn" id="micBtn" onclick="window.app.toggleSpeechRecognition()" title="Click to speak with Alexa+" aria-label="Toggle voice input">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path fill="currentColor" d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
       </button>
 
       <div class="voice-ticker-box">
         <span class="alexa-label">Alexa+:</span>
-        <div class="voice-ticker-text" id="voiceTickerText">
+        <div class="voice-ticker-text" id="voiceTickerText" aria-live="polite">
           Ready. Tap any action, click a judge scenario, or ask me: "Find top online hackathons for ₹0 budget".
         </div>
       </div>
 
       <div class="command-input-group">
-        <input type="text" id="commandInput" placeholder="Ask Alexa+ or type a command..." onkeydown="if(event.key==='Enter') window.app.handleCommand(this.value)">
+        <input type="text" id="commandInput" placeholder="Ask Alexa+ or type a command..." onkeydown="if(event.key==='Enter') window.app.handleCommand(this.value)" aria-label="Type a command or query">
         <button class="send-btn" onclick="window.app.handleCommand(document.getElementById('commandInput').value)">Send</button>
       </div>
 
-      <button class="tts-toggle-btn" id="ttsToggleBtn" onclick="window.app.toggleTTS()" title="Toggle voice narration (speech synthesis)">
+      <button class="tts-toggle-btn" id="ttsToggleBtn" onclick="window.app.toggleTTS()" title="Toggle voice narration (speech synthesis)" aria-label="Toggle voice narration">
         <span class="tts-icon" id="ttsIcon">🔊</span>
       </button>
     </div>
   </footer>
 
   <!-- Collapsible Right Drawer: MCP 2025-11-25 Wire Inspector -->
-  <aside class="wire-inspector-drawer" id="wireInspectorDrawer">
+  <aside class="wire-inspector-drawer" id="wireInspectorDrawer" role="dialog" aria-label="MCP Protocol Wire Inspector">
     <div class="drawer-header">
       <div class="drawer-title">
-        <span class="wire-pulse-icon">⚡</span>
+        <span class="wire-pulse-icon" aria-hidden="true">⚡</span>
         <h3>MCP Protocol Wire Inspector</h3>
       </div>
       <div class="drawer-actions">
         <button class="clear-wire-btn" onclick="window.app.clearWireLogs()" title="Clear logs">Clear</button>
-        <button class="close-drawer-btn" onclick="window.app.toggleWireInspector()" title="Close drawer">✕</button>
+        <button class="close-drawer-btn" onclick="window.app.toggleWireInspector()" title="Close drawer" aria-label="Close wire inspector">✕</button>
       </div>
     </div>
     <div class="drawer-protocol-info">
@@ -206,6 +278,6 @@
     </div>
   </aside>
 
-  <script src="/static/app.js?v=2.1.0"></script>
+  <script src="/static/app.js?v=2.2.0"></script>
 </body>
 </html>

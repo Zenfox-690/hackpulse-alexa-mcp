@@ -78,6 +78,7 @@ def serve_index():
 
 @app.get("/health")
 def healthcheck():
+    from core.database import get_refresh_status
     conn = get_db_connection()
     count = conn.execute("SELECT COUNT(*) AS c FROM hackathons").fetchone()["c"]
     audits = conn.execute("SELECT COUNT(*) AS c FROM rule_audits").fetchone()["c"]
@@ -90,7 +91,23 @@ def healthcheck():
         "mcp_protocol_version": PROTOCOL_VERSION,
         "total_hackathons": count,
         "total_rule_audits": audits,
+        "refresh_status": get_refresh_status(),
     }
+
+
+@app.get("/sync/status")
+def sync_status():
+    """Returns operational refresh timestamps and per-source status."""
+    from core.database import get_refresh_status
+    return {"status": "ok", "refresh_logs": get_refresh_status()}
+
+
+@app.post("/sync/refresh")
+def sync_refresh(retention_days: int = 30):
+    """Triggers autonomous multi-source discovery, status refresh, and rolling 30-day retention purge."""
+    from core.ingestion import refresh_discovery_sources
+    res = refresh_discovery_sources(retention_days=retention_days)
+    return {"status": "ok", "refresh_summary": res}
 
 
 @app.get("/mcp")
