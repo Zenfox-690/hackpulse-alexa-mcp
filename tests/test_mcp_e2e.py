@@ -1365,21 +1365,28 @@ def test_critical_data_integrity_and_registration_status_regression():
     assert norm_ambiguous["status"] == "unknown"
 
     # 7. Devfolio date normalization preserves distinction between event dates and registration deadlines
-    bios = get_hackathon("BIOS V2")
+    bios = get_hackathon("BIOS V2", now=now_ref)
     assert bios is not None
     assert bios["source"] == "Devfolio"
+    assert "raw_json" not in bios, "Internal raw_json must never be exposed in public hackathon records"
     # Registration deadline was Oct 19, 2026
     assert "2026-10-19" in bios["reg_ends_at"]
     # Event hacking period is Oct 30 - Nov 01, 2026
     assert "2026-10-30" in bios["starts_at"]
     assert "2026-11-01" in bios["ends_at"]
-    # Since reg_ends_at is in the past but ends_at is in the future, status is closed
+    # Since reg_ends_at is in the past but ends_at is in the future as of now_ref, status is closed
     assert bios["status"] == "closed"
+    # Explicit normalization against reference date confirms closed status
+    norm_bios = normalize_event_dates_and_status(bios, now=now_ref)
+    assert norm_bios["status"] == "closed"
 
-    arkiv = get_hackathon("Arkiv: Global Tour Stop")
+    arkiv = get_hackathon("Arkiv: Global Tour Stop", now=now_ref)
     assert arkiv is not None
+    assert "raw_json" not in arkiv, "Internal raw_json must never be exposed in public hackathon records"
     assert "2026-10-18" in arkiv["reg_ends_at"]
     assert arkiv["status"] == "ended"
+    norm_arkiv = normalize_event_dates_and_status(arkiv, now=now_ref)
+    assert norm_arkiv["status"] == "ended"
 
     # 8. Existing search and source/format filters continue to work
     devpost_online = query_hackathons(source="Devpost", location="Online", limit=10)

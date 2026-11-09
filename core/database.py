@@ -498,7 +498,18 @@ def normalize_event_dates_and_status(
     if now is None:
         now = datetime.now(timezone.utc)
 
-    raw_status = (item.get("status") or "").strip().lower()
+    # Recover source-reported status from raw_json if present (e.g. when re-normalizing stored DB records)
+    raw_status = ""
+    if isinstance(item.get("raw_json"), str) and item["raw_json"]:
+        try:
+            raw_status = (json.loads(item["raw_json"]).get("status") or "").strip().lower()
+        except Exception:
+            pass
+    elif isinstance(item.get("raw_json"), dict) and item["raw_json"]:
+        raw_status = (item["raw_json"].get("status") or "").strip().lower()
+
+    if not raw_status:
+        raw_status = (item.get("status") or "").strip().lower()
     reg_starts = (item.get("reg_starts_at") or "").strip()
     reg_ends = (item.get("reg_ends_at") or "").strip()
     starts_at = (item.get("starts_at") or "").strip()
@@ -1218,6 +1229,7 @@ def query_hackathons(
 def get_hackathon(
     identifier: str,
     db_path: Optional[Path | str] = None,
+    now: Optional[datetime] = None,
 ) -> Optional[Dict[str, Any]]:
     conn = get_db_connection(db_path)
     clean_id = identifier.strip()
@@ -1243,6 +1255,7 @@ def get_hackathon(
         conn.close()
         return None
 
+    raw_json_str = row["raw_json"] if "raw_json" in row.keys() and row["raw_json"] else ""
     item = {
         "id": row["id"],
         "fingerprint": row["fingerprint"],
@@ -1269,6 +1282,16 @@ def get_hackathon(
         "updated_at": row["updated_at"],
     }
     conn.close()
+
+    if now is not None:
+        raw_item = None
+        if raw_json_str:
+            try:
+                raw_item = json.loads(raw_json_str)
+            except Exception:
+                pass
+        normalized = normalize_event_dates_and_status(raw_item or item, now=now)
+        item["status"] = normalized["status"]
 
     profile = get_builder_profile(db_path=db_path)
     item.update(score_hackathon_for_profile(item, profile))
