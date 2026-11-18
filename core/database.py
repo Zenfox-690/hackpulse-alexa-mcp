@@ -577,6 +577,7 @@ def sync_upstream_json(
     data: Dict[str, Any],
     is_fallback: bool = False,
     db_path: Optional[Path | str] = None,
+    now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """Syncs catalog JSON into SQLite database."""
     init_db(db_path)
@@ -588,7 +589,7 @@ def sync_upstream_json(
 
     added = 0
     updated = 0
-    now_dt = datetime.now(timezone.utc)
+    now_dt = now or datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
 
     with conn:
@@ -1049,6 +1050,7 @@ def query_hackathons(
     sort_by_feasibility: bool = False,
     limit: int = 20,
     db_path: Optional[Path | str] = None,
+    now: Optional[datetime] = None,
 ) -> List[Dict[str, Any]]:
     conn = get_db_connection(db_path)
     sql = ["SELECT * FROM hackathons WHERE 1=1"]
@@ -1089,7 +1091,7 @@ def query_hackathons(
         sql.append("AND LOWER(source) = LOWER(?)")
         params.append(source.strip())
 
-    now_dt = datetime.now(timezone.utc)
+    now_dt = now or datetime.now(timezone.utc)
     now_iso = now_dt.isoformat()
     from datetime import timedelta
     cutoff_30d_iso = (now_dt - timedelta(days=30)).isoformat()

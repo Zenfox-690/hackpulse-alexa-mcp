@@ -1223,26 +1223,183 @@ def test_custom_hours_sprint_plan_and_profile_integration():
 
 
 
-def test_format_and_status_filtering_contracts():
+@pytest.fixture
+def deterministic_catalog_db(tmp_path):
+    """Provides an isolated SQLite database pre-seeded with synthetic, deterministic
+    hackathon records covering all lifecycle states under reference date now_ref (2026-10-23).
+    """
+    from datetime import datetime, timezone
+    from core.database import init_db, sync_upstream_json
+
+    db_file = tmp_path / "deterministic_catalog.db"
+    now_ref = datetime(2026, 10, 23, 12, 0, 0, tzinfo=timezone.utc)
+
+    records = [
+        # 1. Confirmed-open registration with future deadline (Devpost, Online)
+        {
+            "id": "devpost_open_ai",
+            "fingerprint": "devpost_open_ai",
+            "title": "Open Global AI Sprint",
+            "url": "https://devpost.com/hackathons/global-ai-sprint",
+            "source": "Devpost",
+            "location": "Online",
+            "status": "open",
+            "reg_starts_at": "2026-10-01T00:00:00+00:00",
+            "reg_ends_at": "2026-11-15T00:00:00+00:00",
+            "deadline": "2026-11-15T00:00:00+00:00",
+            "starts_at": "2026-11-20T00:00:00+00:00",
+            "ends_at": "2026-11-22T00:00:00+00:00",
+            "tags": ["AI", "Python"],
+            "prize": "$25,000",
+        },
+        # 2. Confirmed-open registration (Unstop, In-Person)
+        {
+            "id": "unstop_open_codefest",
+            "fingerprint": "unstop_open_codefest",
+            "title": "Unstop National Codefest 2026",
+            "url": "https://unstop.com/hackathons/national-codefest",
+            "source": "Unstop",
+            "location": "In-Person",
+            "status": "open",
+            "reg_starts_at": "2026-10-01T00:00:00+00:00",
+            "reg_ends_at": "2026-11-10T00:00:00+00:00",
+            "deadline": "2026-11-10T00:00:00+00:00",
+            "starts_at": "2026-11-12T00:00:00+00:00",
+            "ends_at": "2026-11-14T00:00:00+00:00",
+            "tags": ["Coding", "Algorithms"],
+            "prize": "₹1,00,000",
+        },
+        # 3. Confirmed-closed registration with past deadline (Unstop)
+        {
+            "id": "unstop_closed_opp",
+            "fingerprint": "unstop_closed_opp",
+            "title": "Closed Unstop Opportunity",
+            "url": "https://unstop.com/hackathons/closed-opp",
+            "source": "Unstop",
+            "location": "Online",
+            "status": "open",  # source claims open, but reg deadline passed
+            "reg_starts_at": "2026-09-01T00:00:00+00:00",
+            "reg_ends_at": "2026-10-01T00:00:00+00:00",  # past as of now_ref
+            "deadline": "2026-10-01T00:00:00+00:00",
+            "starts_at": "2026-10-15T00:00:00+00:00",
+            "ends_at": "2026-10-30T00:00:00+00:00",
+            "tags": ["Web"],
+            "prize": "₹10,000",
+        },
+        # 4. Registration closed but event dates still in future (Devfolio, BIOS V2)
+        {
+            "id": "df5c2ed84bdac8c3987bb3687d00db4a1f18684cc7d46da7fd655d3bb35268dc",
+            "fingerprint": "df5c2ed84bdac8c3987bb3687d00db4a1f18684cc7d46da7fd655d3bb35268dc",
+            "title": "BIOS V2",
+            "url": "https://biosv2.devfolio.co",
+            "source": "Devfolio",
+            "location": "In-Person",
+            "status": "open",
+            "reg_starts_at": "2026-10-01T06:30:00+00:00",
+            "reg_ends_at": "2026-10-19T18:29:00+00:00",
+            "deadline": "2026-10-19T18:29:00+00:00",
+            "starts_at": "2026-10-30T06:30:00+00:00",
+            "ends_at": "2026-11-01T06:30:00+00:00",
+            "tags": ["no restrictions"],
+            "prize": "Unknown",
+        },
+        # 5. Genuinely ended event (Devfolio, Arkiv)
+        {
+            "id": "c9a970c865e91beb91641c6b4ecc2f04f5a99a5312dbef78e5f370b34f3a5c6e",
+            "fingerprint": "c9a970c865e91beb91641c6b4ecc2f04f5a99a5312dbef78e5f370b34f3a5c6e",
+            "title": "Arkiv: Global Tour Stop",
+            "url": "https://arkiv.devfolio.co",
+            "source": "Devfolio",
+            "location": "Online",
+            "status": "open",
+            "reg_starts_at": "2026-10-07T09:00:00+00:00",
+            "reg_ends_at": "2026-10-18T22:59:00+00:00",
+            "deadline": "2026-10-18T22:59:00+00:00",
+            "starts_at": "2026-10-09T11:00:00+00:00",
+            "ends_at": "2026-10-18T22:59:00+00:00",
+            "tags": ["blockchain"],
+            "prize": "Unknown",
+        },
+        # 6. Event with unknown registration status
+        {
+            "id": "unknown_community_hack",
+            "fingerprint": "unknown_community_hack",
+            "title": "Unverified Community Hackathon",
+            "url": "https://community.example.org",
+            "source": "Devpost",
+            "location": "Online",
+            "status": "unknown",
+            "deadline": "",
+            "reg_starts_at": "",
+            "reg_ends_at": "",
+            "starts_at": "2026-12-01T00:00:00+00:00",
+            "ends_at": "2026-12-05T00:00:00+00:00",
+            "tags": ["Open Source"],
+            "prize": "Unknown",
+        },
+        # 7. Event with missing or ambiguous dates
+        {
+            "id": "tba_dates_event",
+            "fingerprint": "tba_dates_event",
+            "title": "TBA Dates Event",
+            "url": "https://tba.example.org",
+            "source": "Devpost",
+            "location": "Online",
+            "status": "unknown",
+            "deadline": "TBA",
+            "reg_ends_at": "",
+            "starts_at": "Unknown",
+            "ends_at": "",
+            "tags": ["Community"],
+            "prize": "Unknown",
+        },
+    ]
+
+    sync_upstream_json(records, db_path=db_file, now=now_ref)
+    return db_file, now_ref
+
+
+def test_format_and_status_filtering_contracts(deterministic_catalog_db):
     """Verifies that query_hackathons cleanly filters by participation format and status
     without corrupting search ranking or feasibility scores.
+    Uses synthetic deterministic records in an isolated database.
     """
     from core.database import query_hackathons
 
-    online_items = query_hackathons(location="Online", limit=20)
+    db_file, now_ref = deterministic_catalog_db
+
+    # 1. Online filtering returns online records
+    online_items = query_hackathons(location="Online", limit=20, db_path=db_file, now=now_ref)
     assert len(online_items) > 0
     assert all("online" in (h.get("location") or "").lower() for h in online_items)
+    assert any(h["id"] == "devpost_open_ai" for h in online_items)
 
-    in_person_items = query_hackathons(location="In-Person", limit=20)
+    # 2. In-person filtering returns in-person records
+    in_person_items = query_hackathons(location="In-Person", limit=20, db_path=db_file, now=now_ref)
     assert len(in_person_items) > 0
     assert all("in-person" in (h.get("location") or "").lower() for h in in_person_items)
+    assert any(h["id"] == "unstop_open_codefest" for h in in_person_items)
 
-    open_items = query_hackathons(status="open", limit=20)
+    # 3. Open filtering returns only genuinely open registrations
+    open_items = query_hackathons(status="open", limit=20, db_path=db_file, now=now_ref)
     assert len(open_items) > 0
     assert all((h.get("status") or "").lower() == "open" for h in open_items)
+    open_ids = [h["id"] for h in open_items]
+    assert "devpost_open_ai" in open_ids
+    assert "unstop_open_codefest" in open_ids
+
+    # 4. Closed and ended records are excluded from open results
+    assert "unstop_closed_opp" not in open_ids
+    assert "df5c2ed84bdac8c3987bb3687d00db4a1f18684cc7d46da7fd655d3bb35268dc" not in open_ids
+    assert "c9a970c865e91beb91641c6b4ecc2f04f5a99a5312dbef78e5f370b34f3a5c6e" not in open_ids
+
+    # 5. Status filtering does not corrupt sorting or feasibility scores
+    scored_items = query_hackathons(status="open", sort_by_feasibility=True, db_path=db_file, now=now_ref)
+    assert len(scored_items) == len(open_items)
+    assert all("feasibility_score" in h for h in scored_items)
 
 
-def test_critical_data_integrity_and_registration_status_regression():
+def test_critical_data_integrity_and_registration_status_regression(deterministic_catalog_db):
     """Targeted regression tests for P0, P1, and P2 data integrity fixes:
     1. A confirmed-closed Unstop opportunity is not presented as confirmed open.
     2. An unknown registration status remains unknown (never falsely promoted to open).
@@ -1262,12 +1419,10 @@ def test_critical_data_integrity_and_registration_status_regression():
         get_hackathon,
     )
 
-    now_ref = datetime(2026, 10, 23, 12, 0, 0, tzinfo=timezone.utc)
+    db_file, now_ref = deterministic_catalog_db
 
     # 1. Confirmed-closed Unstop status is not normalized to open (unit test via normalize_event_dates_and_status)
     # This verifies the fix for the P0 regression: closed Unstop records must not be falsely promoted.
-    # We test normalization directly rather than assuming the production DB has zero open Unstop records
-    # (after live discovery, genuinely open Unstop opportunities exist in the catalog).
     closed_unstop = normalize_event_dates_and_status({
         "title": "Closed Unstop Hackathon (reg_status=CLOSED)",
         "status": "open",  # Source-reported status
@@ -1281,11 +1436,12 @@ def test_critical_data_integrity_and_registration_status_regression():
     )
 
     # Verify that genuinely open Unstop hackathons CAN appear in the catalog after live discovery
-    unstop_all = query_hackathons(source="Unstop", limit=20)
+    unstop_all = query_hackathons(source="Unstop", limit=20, db_path=db_file, now=now_ref)
     assert len(unstop_all) > 0, "Unstop hackathons should exist in catalog"
 
     # Any Unstop record returned with open status must have a non-past reg deadline
-    unstop_open = query_hackathons(source="Unstop", status="open", limit=100)
+    unstop_open = query_hackathons(source="Unstop", status="open", limit=100, db_path=db_file, now=now_ref)
+    assert len(unstop_open) > 0, "Genuinely open Unstop hackathons must be returned by status='open'"
     for uh in unstop_open:
         assert uh["status"] == "open", f"query status='open' must only return open records, got: {uh['status']}"
         # Registration deadline must be in the future (or empty)
@@ -1313,12 +1469,12 @@ def test_critical_data_integrity_and_registration_status_regression():
     assert norm_empty["status"] == "unknown"
 
     # 3. Confirmed-open events remain discoverable
-    open_items = query_hackathons(status="open", limit=30)
+    open_items = query_hackathons(status="open", limit=30, db_path=db_file, now=now_ref)
     assert len(open_items) > 0
     assert all(h["status"] == "open" for h in open_items)
     # Check that open items are discoverable by title
     top_open = open_items[0]
-    searched = query_hackathons(query=top_open["title"], status="open", limit=5)
+    searched = query_hackathons(query=top_open["title"], status="open", limit=5, db_path=db_file, now=now_ref)
     assert any(s["id"] == top_open["id"] for s in searched)
 
     # 4. A future event date does NOT automatically imply open registration
@@ -1365,7 +1521,7 @@ def test_critical_data_integrity_and_registration_status_regression():
     assert norm_ambiguous["status"] == "unknown"
 
     # 7. Devfolio date normalization preserves distinction between event dates and registration deadlines
-    bios = get_hackathon("BIOS V2", now=now_ref)
+    bios = get_hackathon("BIOS V2", db_path=db_file, now=now_ref)
     assert bios is not None
     assert bios["source"] == "Devfolio"
     assert "raw_json" not in bios, "Internal raw_json must never be exposed in public hackathon records"
@@ -1380,7 +1536,7 @@ def test_critical_data_integrity_and_registration_status_regression():
     norm_bios = normalize_event_dates_and_status(bios, now=now_ref)
     assert norm_bios["status"] == "closed"
 
-    arkiv = get_hackathon("Arkiv: Global Tour Stop", now=now_ref)
+    arkiv = get_hackathon("Arkiv: Global Tour Stop", db_path=db_file, now=now_ref)
     assert arkiv is not None
     assert "raw_json" not in arkiv, "Internal raw_json must never be exposed in public hackathon records"
     assert "2026-10-18" in arkiv["reg_ends_at"]
@@ -1389,7 +1545,7 @@ def test_critical_data_integrity_and_registration_status_regression():
     assert norm_arkiv["status"] == "ended"
 
     # 8. Existing search and source/format filters continue to work
-    devpost_online = query_hackathons(source="Devpost", location="Online", limit=10)
+    devpost_online = query_hackathons(source="Devpost", location="Online", limit=10, db_path=db_file, now=now_ref)
     assert len(devpost_online) > 0
     assert all(h["source"].lower() == "devpost" for h in devpost_online)
     assert all("online" in h["location"].lower() for h in devpost_online)

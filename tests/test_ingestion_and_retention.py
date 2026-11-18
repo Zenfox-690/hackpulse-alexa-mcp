@@ -253,6 +253,7 @@ def test_refresh_discovery_sources_idempotent_and_logs(tmp_path):
     """Verifies that multi-source refresh creates records, updates idempotently, and logs status."""
     db_file = tmp_path / "test_refresh.db"
     init_db(db_file)
+    ref_now = datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
 
     def mock_transport(request: httpx.Request) -> httpx.Response:
         url_str = str(request.url)
@@ -269,7 +270,7 @@ def test_refresh_discovery_sources_idempotent_and_logs(tmp_path):
     client_mock = httpx.Client(transport=httpx.MockTransport(mock_transport))
 
     # Run 1: Initial Discovery
-    res1 = refresh_discovery_sources(db_path=db_file, client=client_mock)
+    res1 = refresh_discovery_sources(db_path=db_file, client=client_mock, now=ref_now)
     assert res1["total_discovered"] == 4  # 2 devpost + 1 devfolio + 1 unstop
     assert res1["total_added"] == 4
     assert res1["total_updated"] == 0
@@ -282,7 +283,7 @@ def test_refresh_discovery_sources_idempotent_and_logs(tmp_path):
     assert all(l["status"] == "success" for l in logs)
 
     # Run 2: Repeated Discovery — MUST be idempotent, no duplicates
-    res2 = refresh_discovery_sources(db_path=db_file, client=client_mock)
+    res2 = refresh_discovery_sources(db_path=db_file, client=client_mock, now=ref_now)
     assert res2["total_discovered"] == 4
     assert res2["total_added"] == 0
     assert res2["total_updated"] == 4
@@ -298,6 +299,7 @@ def test_source_failure_preserves_last_known_good_data(tmp_path):
     """If one source encounters an error or network drop, existing records must not be deleted or closed."""
     db_file = tmp_path / "test_fault.db"
     init_db(db_file)
+    ref_now = datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
 
     # Initial seed run with all sources succeeding
     def mock_transport_ok(request: httpx.Request) -> httpx.Response:
@@ -309,7 +311,7 @@ def test_source_failure_preserves_last_known_good_data(tmp_path):
         return httpx.Response(200, json=UNSTOP_OPEN_MOCK)
 
     client_ok = httpx.Client(transport=httpx.MockTransport(mock_transport_ok))
-    refresh_discovery_sources(db_path=db_file, client=client_ok)
+    refresh_discovery_sources(db_path=db_file, client=client_ok, now=ref_now)
 
     # Devfolio item was added
     devfolio_item = get_hackathon("devfolio_web3-wave", db_path=db_file)
@@ -326,7 +328,7 @@ def test_source_failure_preserves_last_known_good_data(tmp_path):
         return httpx.Response(200, json=UNSTOP_OPEN_MOCK)
 
     client_fail = httpx.Client(transport=httpx.MockTransport(mock_transport_devfolio_fail))
-    res = refresh_discovery_sources(db_path=db_file, client=client_fail)
+    res = refresh_discovery_sources(db_path=db_file, client=client_fail, now=ref_now)
 
     # Verify source error is logged and reported
     assert res["sources"]["Devfolio"]["status"] == "failure"
@@ -349,6 +351,7 @@ def test_missing_observation_threshold(tmp_path):
     """
     db_file = tmp_path / "test_missing.db"
     init_db(db_file)
+    ref_now = datetime(2026, 10, 20, 12, 0, 0, tzinfo=timezone.utc)
 
     # Run 1: Normal scrape includes Devfolio item
     def mock_run1(request: httpx.Request) -> httpx.Response:
@@ -357,7 +360,7 @@ def test_missing_observation_threshold(tmp_path):
             return httpx.Response(200, json=DEVFOLIO_OPEN_MOCK)
         return httpx.Response(200, json={"hackathons": [], "meta": {}} if "devpost" in url else {"data": {"data": [], "last_page": 1}})
 
-    refresh_discovery_sources(db_path=db_file, client=httpx.Client(transport=httpx.MockTransport(mock_run1)))
+    refresh_discovery_sources(db_path=db_file, client=httpx.Client(transport=httpx.MockTransport(mock_run1)), now=ref_now)
     h = get_hackathon("devfolio_web3-wave", db_path=db_file)
     assert h["status"] == "open"
     assert h["missing_count"] == 0
@@ -370,20 +373,20 @@ def test_missing_observation_threshold(tmp_path):
         return httpx.Response(200, json={"hackathons": [], "meta": {}} if "devpost" in url else {"data": {"data": [], "last_page": 1}})
 
     c_empty = httpx.Client(transport=httpx.MockTransport(mock_empty_devfolio))
-    refresh_discovery_sources(db_path=db_file, client=c_empty)
+    refresh_discovery_sources(db_path=db_file, client=c_empty, now=ref_now)
     h = get_hackathon("devfolio_web3-wave", db_path=db_file)
     # Must still be open! (missing_count = 1)
     assert h["status"] == "open"
     assert h["missing_count"] == 1
 
     # Run 3: 2nd missing observation
-    refresh_discovery_sources(db_path=db_file, client=c_empty)
+    refresh_discovery_sources(db_path=db_file, client=c_empty, now=ref_now)
     h = get_hackathon("devfolio_web3-wave", db_path=db_file)
     assert h["status"] == "open"
     assert h["missing_count"] == 2
 
     # Run 4: 3rd missing observation (threshold reached)
-    refresh_discovery_sources(db_path=db_file, client=c_empty)
+    refresh_discovery_sources(db_path=db_file, client=c_empty, now=ref_now)
     h = get_hackathon("devfolio_web3-wave", db_path=db_file)
     assert h["status"] == "ended"
     assert h["missing_count"] == 3
