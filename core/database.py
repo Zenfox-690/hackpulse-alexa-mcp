@@ -89,8 +89,11 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
         CREATE TABLE IF NOT EXISTS refresh_logs (
             source TEXT PRIMARY KEY,
             last_refreshed_at TEXT NOT NULL,
+            last_successful_at TEXT,
+            last_attempted_at TEXT,
             status TEXT NOT NULL,
             discovered_count INTEGER DEFAULT 0,
+            added_count INTEGER DEFAULT 0,
             updated_count INTEGER DEFAULT 0,
             error_message TEXT
         );
@@ -204,6 +207,15 @@ def init_db(db_path: Optional[Path | str] = None) -> None:
             conn.execute("ALTER TABLE hackathons ADD COLUMN inactive_since TEXT;")
         if "missing_count" not in hackathon_cols:
             conn.execute("ALTER TABLE hackathons ADD COLUMN missing_count INTEGER DEFAULT 0;")
+
+        # Ensure freshness tracking columns exist on refresh_logs table
+        refresh_cols = [c["name"] for c in conn.execute("PRAGMA table_info(refresh_logs);").fetchall()]
+        if "last_successful_at" not in refresh_cols:
+            conn.execute("ALTER TABLE refresh_logs ADD COLUMN last_successful_at TEXT;")
+        if "last_attempted_at" not in refresh_cols:
+            conn.execute("ALTER TABLE refresh_logs ADD COLUMN last_attempted_at TEXT;")
+        if "added_count" not in refresh_cols:
+            conn.execute("ALTER TABLE refresh_logs ADD COLUMN added_count INTEGER DEFAULT 0;")
     conn.close()
 
 
@@ -624,10 +636,22 @@ def sync_upstream_json(
             raw_str = json.dumps(item)
 
             existing = conn.execute(
-                "SELECT id, status, inactive_since, missing_count FROM hackathons WHERE id = ?", (h_id,)
+                "SELECT id, status, inactive_since, missing_count, last_verified_at FROM hackathons WHERE id = ?", (h_id,)
             ).fetchone()
 
-            last_verified_at = item.get("last_verified_at") or now_iso
+            if is_fallback:
+                # Honest fallback provenance: do not promote stale offline records as live-verified
+                fallback_verified = item.get("last_verified_at") or "2026-10-17T00:00:00Z"
+                last_verified_at = fallback_verified
+                if existing and existing["last_verified_at"]:
+                    dt_existing_ver = parse_event_datetime(existing["last_verified_at"])
+                    dt_fallback_ver = parse_event_datetime(fallback_verified)
+                    if dt_existing_ver and dt_fallback_ver and dt_existing_ver > dt_fallback_ver:
+                        # Avoid overwriting newer live-verified records with older fallback information
+                        continue
+            else:
+                last_verified_at = item.get("last_verified_at") or now_iso
+
             if status in ["open", "upcoming"]:
                 inactive_since = None
                 missing_count = 0
@@ -765,27 +789,75 @@ def record_refresh_log(
     source: str,
     status: str,
     discovered_count: int = 0,
+    added_count: int = 0,
     updated_count: int = 0,
     error_message: Optional[str] = None,
+    attempted_at: Optional[datetime] = None,
+    successful_at: Optional[datetime] = None,
     db_path: Optional[Path | str] = None,
 ) -> None:
-    """Records per-source refresh result and timestamp for observability."""
+    """Records per-source refresh result and timestamps for observability.
+
+    Guarantees:
+    - Tracks last_attempted_at and last_successful_at independently.
+    - A failed refresh updates last_attempted_at and error_message, but NEVER
+      updates last_successful_at.
+    - Preserves last known good timestamps when a failure occurs.
+    """
     init_db(db_path)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_dt = attempted_at or datetime.now(timezone.utc)
+    now_iso = now_dt.isoformat()
+    status_clean = (status or "").lower()
+
     conn = get_db_connection(db_path)
     with conn:
+        existing = conn.execute(
+            "SELECT source, last_successful_at, discovered_count, added_count, updated_count FROM refresh_logs WHERE LOWER(source) = LOWER(?)",
+            (source,),
+        ).fetchone()
+
+        if status_clean in ["success", "partial"]:
+            # Successful run: update last_successful_at
+            last_succ_iso = (successful_at or now_dt).isoformat()
+            disc_final = discovered_count
+            added_final = added_count
+            upd_final = updated_count
+            err_final = error_message if status_clean == "partial" else None
+        else:
+            # Failure: preserve previous last_successful_at; do NOT update it!
+            last_succ_iso = existing["last_successful_at"] if existing else None
+            disc_final = 0
+            added_final = 0
+            upd_final = 0
+            err_final = error_message
+
         conn.execute(
             """
-            INSERT INTO refresh_logs (source, last_refreshed_at, status, discovered_count, updated_count, error_message)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO refresh_logs (
+                source, last_refreshed_at, last_successful_at, last_attempted_at,
+                status, discovered_count, added_count, updated_count, error_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source) DO UPDATE SET
                 last_refreshed_at = excluded.last_refreshed_at,
+                last_successful_at = excluded.last_successful_at,
+                last_attempted_at = excluded.last_attempted_at,
                 status = excluded.status,
                 discovered_count = excluded.discovered_count,
+                added_count = excluded.added_count,
                 updated_count = excluded.updated_count,
                 error_message = excluded.error_message
             """,
-            (source, now_iso, status, discovered_count, updated_count, error_message),
+            (
+                source,
+                now_iso,
+                last_succ_iso,
+                now_iso,
+                status_clean,
+                disc_final,
+                added_final,
+                upd_final,
+                err_final,
+            ),
         )
     conn.close()
 
@@ -799,6 +871,113 @@ def get_refresh_status(db_path: Optional[Path | str] = None) -> List[Dict[str, A
         return [dict(r) for r in rows]
     except Exception:
         return []
+    finally:
+        conn.close()
+
+
+def get_catalog_freshness(
+    db_path: Optional[Path | str] = None,
+    threshold_hours: int = 24,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Evaluates catalog and per-source freshness against a configurable threshold.
+
+    Default threshold is 24 hours.
+    Tracks Devpost, Devfolio, and Unstop independently.
+    Ensures failed attempts do not falsely make a source appear fresh.
+    """
+    init_db(db_path)
+    if now is None:
+        now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+
+    conn = get_db_connection(db_path)
+    expected_sources = ["Devpost", "Devfolio", "Unstop"]
+    sources_data = {}
+
+    try:
+        rows = conn.execute("SELECT * FROM refresh_logs").fetchall()
+        rows_by_source = {r["source"].lower(): dict(r) for r in rows}
+
+        all_fresh = True
+        stale_sources = []
+        fresh_sources = []
+
+        for src in expected_sources:
+            log = rows_by_source.get(src.lower())
+            if not log:
+                sources_data[src] = {
+                    "source": src,
+                    "status": "never_run",
+                    "last_attempted_at": None,
+                    "last_successful_at": None,
+                    "hours_since_last_success": None,
+                    "is_fresh": False,
+                    "discovered_count": 0,
+                    "added_count": 0,
+                    "updated_count": 0,
+                    "last_error": None,
+                }
+                all_fresh = False
+                stale_sources.append(src)
+                continue
+
+            last_success_str = log.get("last_successful_at")
+            hours_since = None
+            is_fresh = False
+
+            if last_success_str:
+                dt_success = parse_event_datetime(last_success_str)
+                if dt_success:
+                    hours_since = round((now - dt_success).total_seconds() / 3600.0, 2)
+                    is_fresh = (hours_since >= 0 and hours_since <= threshold_hours)
+
+            if is_fresh:
+                fresh_sources.append(src)
+            else:
+                all_fresh = False
+                stale_sources.append(src)
+
+            sources_data[src] = {
+                "source": src,
+                "status": log.get("status") or "unknown",
+                "last_attempted_at": log.get("last_attempted_at") or log.get("last_refreshed_at"),
+                "last_successful_at": last_success_str,
+                "hours_since_last_success": hours_since,
+                "is_fresh": is_fresh,
+                "discovered_count": log.get("discovered_count") or 0,
+                "added_count": log.get("added_count") or 0,
+                "updated_count": log.get("updated_count") or 0,
+                "last_error": log.get("error_message"),
+            }
+
+        total_h = conn.execute("SELECT COUNT(*) AS c FROM hackathons").fetchone()["c"]
+        open_h = conn.execute("SELECT COUNT(*) AS c FROM hackathons WHERE LOWER(status) = 'open'").fetchone()["c"]
+
+        return {
+            "is_fresh": all_fresh,
+            "overall_status": "fresh" if all_fresh else "stale",
+            "freshness_threshold_hours": threshold_hours,
+            "evaluated_at": now_iso,
+            "sources": sources_data,
+            "fresh_sources": fresh_sources,
+            "stale_sources": stale_sources,
+            "total_hackathons": total_h,
+            "open_hackathons": open_h,
+        }
+    except Exception as e:
+        return {
+            "is_fresh": False,
+            "overall_status": "error",
+            "error": str(e),
+            "freshness_threshold_hours": threshold_hours,
+            "evaluated_at": now_iso,
+            "sources": {},
+            "fresh_sources": [],
+            "stale_sources": expected_sources,
+            "total_hackathons": 0,
+            "open_hackathons": 0,
+        }
     finally:
         conn.close()
 
