@@ -14,6 +14,7 @@ Accurate status & date distinction:
 import json
 import logging
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -79,6 +80,24 @@ def parse_date_range_to_iso(range_str: Optional[str]) -> Tuple[str, str]:
 
     return start_iso, end_iso
 
+
+
+_REFRESH_LOCK = threading.Lock()
+
+
+class ConcurrencyError(Exception):
+    """Raised when a catalog refresh is already active."""
+    pass
+
+
+def sanitize_error_message(err: Optional[str]) -> Optional[str]:
+    """Sanitizes error messages to prevent credential leaks, auth tokens, or private paths."""
+    if not err:
+        return None
+    cleaned = re.sub(r"(token|secret|key|password|auth|bearer)=[^\s&]+", r"\1=[REDACTED]", str(err), flags=re.IGNORECASE)
+    cleaned = re.sub(r"Bearer\s+[A-Za-z0-9_\-\.]+", "Bearer [REDACTED]", cleaned)
+    cleaned = re.sub(r"[A-Za-z]:\\[\w\\.-]+", "[LOCAL_PATH]", cleaned)
+    return cleaned[:300]
 
 class DiscoveryError(Exception):
     """Raised when an approved discovery source fails or changes structure."""
@@ -431,6 +450,7 @@ def refresh_discovery_sources(
     client: Optional[httpx.Client] = None,
     now: Optional[datetime] = None,
     max_pages_per_source: Optional[int] = None,
+    block_if_busy: bool = False,
 ) -> Dict[str, Any]:
     """Executes multi-source daily refresh and rolling 30-day context retention.
     
@@ -442,248 +462,274 @@ def refresh_discovery_sources(
     - Requires 3 consecutive missing observations before declaring an unlisted item inactive.
     - Purges inactive records only after retention_days past confirmed inactivity.
     - Never deletes active (open/upcoming) opportunities regardless of age.
+    - Concurrency-safe: prevents overlapping or race-condition refreshes.
     """
-    init_db(db_path)
-    if now is None:
-        now = datetime.now(timezone.utc)
-    now_iso = now.isoformat()
+    acquired = _REFRESH_LOCK.acquire(blocking=block_if_busy)
+    if not acquired:
+        raise ConcurrencyError("Catalog refresh is already in progress.")
 
-    available_sources = {
-        "Devpost": lambda: fetch_devpost_hackathons(client=client, max_pages=max_pages_per_source),
-        "Devfolio": lambda: fetch_devfolio_hackathons(client=client, max_pages=max_pages_per_source),
-        "Unstop": lambda: fetch_unstop_hackathons(client=client, max_pages=max_pages_per_source),
-    }
+    try:
+        init_db(db_path)
+        if now is None:
+            now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
 
-    target_sources = [s for s in (sources or ["Devpost", "Devfolio", "Unstop"]) if s in available_sources]
-    summary_report: Dict[str, Any] = {
-        "refreshed_at": now_iso,
-        "sources": {},
-        "total_discovered": 0,
-        "total_updated": 0,
-        "total_added": 0,
-        "total_purged": 0,
-    }
+        available_sources = {
+            "Devpost": lambda: fetch_devpost_hackathons(client=client, max_pages=max_pages_per_source),
+            "Devfolio": lambda: fetch_devfolio_hackathons(client=client, max_pages=max_pages_per_source),
+            "Unstop": lambda: fetch_unstop_hackathons(client=client, max_pages=max_pages_per_source),
+        }
 
-    conn = get_db_connection(db_path)
+        target_sources = [s for s in (sources or ["Devpost", "Devfolio", "Unstop"]) if s in available_sources]
+        summary_report: Dict[str, Any] = {
+            "refreshed_at": now_iso,
+            "sources": {},
+            "total_discovered": 0,
+            "total_updated": 0,
+            "total_added": 0,
+            "total_purged": 0,
+        }
 
-    for src_name in target_sources:
-        src_fn = available_sources[src_name]
-        try:
-            items = src_fn()
-            added_count = 0
-            updated_count = 0
-            discovered_ids = set()
+        conn = get_db_connection(db_path)
 
-            with conn:
-                for item in items:
-                    h_id = item.get("id")
-                    if not h_id:
-                        continue
-                    discovered_ids.add(h_id)
+        for src_name in target_sources:
+            src_fn = available_sources[src_name]
+            try:
+                items = src_fn()
+                added_count = 0
+                updated_count = 0
+                discovered_ids = set()
 
-                    title = item.get("title", "")
-                    url_val = item.get("url", "")
-                    loc = item.get("location", "Online")
-                    raw_tags = item.get("tags", [])
-                    tags_json = json.dumps(raw_tags if isinstance(raw_tags, list) else [])
-                    raw_prize = item.get("prize", "Unknown")
-                    prize_str, prize_amt, prize_curr = sanitize_prize(raw_prize)
-                    desc = item.get("description", "")
-                    raw_str = json.dumps(item)
+                with conn:
+                    for item in items:
+                        h_id = item.get("id")
+                        if not h_id:
+                            continue
+                        discovered_ids.add(h_id)
 
-                    normalized = normalize_event_dates_and_status(item, now=now)
-                    reg_starts = normalized["reg_starts_at"]
-                    reg_ends = normalized["reg_ends_at"]
-                    starts_at = normalized["starts_at"]
-                    ends_at = normalized["ends_at"]
-                    deadline = normalized["deadline"]
-                    status = normalized["status"]
+                        title = item.get("title", "")
+                        url_val = item.get("url", "")
+                        loc = item.get("location", "Online")
+                        raw_tags = item.get("tags", [])
+                        tags_json = json.dumps(raw_tags if isinstance(raw_tags, list) else [])
+                        raw_prize = item.get("prize", "Unknown")
+                        prize_str, prize_amt, prize_curr = sanitize_prize(raw_prize)
+                        desc = item.get("description", "")
+                        raw_str = json.dumps(item)
 
-                    existing = conn.execute(
-                        "SELECT id, status, inactive_since, missing_count FROM hackathons WHERE id = ?",
-                        (h_id,),
-                    ).fetchone()
+                        normalized = normalize_event_dates_and_status(item, now=now)
+                        reg_starts = normalized["reg_starts_at"]
+                        reg_ends = normalized["reg_ends_at"]
+                        starts_at = normalized["starts_at"]
+                        ends_at = normalized["ends_at"]
+                        deadline = normalized["deadline"]
+                        status = normalized["status"]
 
-                    # Date and status discrepancy checking
-                    if status in ["open", "upcoming"]:
-                        inactive_since = None
-                        missing_count = 0
-                    else:
-                        inactive_since = (
-                            existing["inactive_since"]
-                            if (existing and existing["inactive_since"])
-                            else now_iso
-                        )
-                        missing_count = (existing["missing_count"] if existing else 0)
+                        existing = conn.execute(
+                            "SELECT id, status, inactive_since, missing_count FROM hackathons WHERE id = ?",
+                            (h_id,),
+                        ).fetchone()
 
-                    if existing:
-                        conn.execute(
-                            """
-                            UPDATE hackathons SET
-                                title = ?,
-                                url = ?,
-                                source = ?,
-                                deadline = ?,
-                                reg_starts_at = ?,
-                                reg_ends_at = ?,
-                                starts_at = ?,
-                                ends_at = ?,
-                                description = ?,
-                                tags = ?,
-                                prize = ?,
-                                prize_amount = ?,
-                                prize_currency = ?,
-                                location = ?,
-                                status = ?,
-                                raw_json = ?,
-                                updated_at = ?,
-                                last_verified_at = ?,
-                                inactive_since = ?,
-                                missing_count = ?
-                            WHERE id = ?
-                            """,
-                            (
-                                title,
-                                url_val,
-                                src_name,
-                                deadline,
-                                reg_starts,
-                                reg_ends,
-                                starts_at,
-                                ends_at,
-                                desc,
-                                tags_json,
-                                prize_str,
-                                prize_amt,
-                                prize_curr,
-                                loc,
-                                status,
-                                raw_str,
-                                now_iso,
-                                now_iso,
-                                inactive_since,
-                                missing_count,
-                                h_id,
-                            ),
-                        )
-                        updated_count += 1
-                    else:
-                        conn.execute(
-                            """
-                            INSERT INTO hackathons (
-                                id, fingerprint, title, url, source, deadline,
-                                reg_starts_at, reg_ends_at, starts_at, ends_at,
-                                description, tags, prize, prize_amount, prize_currency,
-                                location, status, raw_json, created_at, updated_at,
-                                last_verified_at, inactive_since, missing_count
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                h_id,
-                                h_id,
-                                title,
-                                url_val,
-                                src_name,
-                                deadline,
-                                reg_starts,
-                                reg_ends,
-                                starts_at,
-                                ends_at,
-                                desc,
-                                tags_json,
-                                prize_str,
-                                prize_amt,
-                                prize_curr,
-                                loc,
-                                status,
-                                raw_str,
-                                now_iso,
-                                now_iso,
-                                now_iso,
-                                inactive_since,
-                                missing_count,
-                            ),
-                        )
-                        added_count += 1
-
-                # Conservative missing-observation policy:
-                # Existing items from this source not returned in this successful run
-                existing_source_items = conn.execute(
-                    "SELECT id, status, reg_ends_at, ends_at, inactive_since, missing_count FROM hackathons WHERE LOWER(source) = LOWER(?)",
-                    (src_name,),
-                ).fetchall()
-
-                for row in existing_source_items:
-                    r_id = row["id"]
-                    if r_id not in discovered_ids:
-                        new_missing = (row["missing_count"] or 0) + 1
-                        curr_status = row["status"]
-                        dt_reg_ends = parse_event_datetime(row["reg_ends_at"])
-                        dt_ends = parse_event_datetime(row["ends_at"])
-
-                        # Declare inactive if repeated missing observation OR deadline passed
-                        is_now_inactive = False
-                        if (dt_reg_ends and dt_reg_ends <= now) or (dt_ends and dt_ends <= now):
-                            is_now_inactive = True
-                        elif new_missing >= MISSING_OBSERVATION_THRESHOLD:
-                            is_now_inactive = True
-
-                        if is_now_inactive and curr_status not in ["ended", "closed"]:
-                            new_status = "ended"
-                            inact_since = row["inactive_since"] or now_iso
+                        # Date and status discrepancy checking
+                        if status in ["open", "upcoming"]:
+                            inactive_since = None
+                            missing_count = 0
                         else:
-                            new_status = curr_status
-                            inact_since = row["inactive_since"]
+                            inactive_since = (
+                                existing["inactive_since"]
+                                if (existing and existing["inactive_since"])
+                                else now_iso
+                            )
+                            missing_count = (existing["missing_count"] if existing else 0)
 
-                        conn.execute(
-                            "UPDATE hackathons SET missing_count = ?, status = ?, inactive_since = ?, updated_at = ? WHERE id = ?",
-                            (new_missing, new_status, inact_since, now_iso, r_id),
-                        )
+                        if existing:
+                            conn.execute(
+                                """
+                                UPDATE hackathons SET
+                                    title = ?,
+                                    url = ?,
+                                    source = ?,
+                                    deadline = ?,
+                                    reg_starts_at = ?,
+                                    reg_ends_at = ?,
+                                    starts_at = ?,
+                                    ends_at = ?,
+                                    description = ?,
+                                    tags = ?,
+                                    prize = ?,
+                                    prize_amount = ?,
+                                    prize_currency = ?,
+                                    location = ?,
+                                    status = ?,
+                                    raw_json = ?,
+                                    updated_at = ?,
+                                    last_verified_at = ?,
+                                    inactive_since = ?,
+                                    missing_count = ?
+                                WHERE id = ?
+                                """,
+                                (
+                                    title,
+                                    url_val,
+                                    src_name,
+                                    deadline,
+                                    reg_starts,
+                                    reg_ends,
+                                    starts_at,
+                                    ends_at,
+                                    desc,
+                                    tags_json,
+                                    prize_str,
+                                    prize_amt,
+                                    prize_curr,
+                                    loc,
+                                    status,
+                                    raw_str,
+                                    now_iso,
+                                    now_iso,
+                                    inactive_since,
+                                    missing_count,
+                                    h_id,
+                                ),
+                            )
+                            updated_count += 1
+                        else:
+                            conn.execute(
+                                """
+                                INSERT INTO hackathons (
+                                    id, fingerprint, title, url, source, deadline,
+                                    reg_starts_at, reg_ends_at, starts_at, ends_at,
+                                    description, tags, prize, prize_amount, prize_currency,
+                                    location, status, raw_json, created_at, updated_at,
+                                    last_verified_at, inactive_since, missing_count
+                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    h_id,
+                                    h_id,
+                                    title,
+                                    url_val,
+                                    src_name,
+                                    deadline,
+                                    reg_starts,
+                                    reg_ends,
+                                    starts_at,
+                                    ends_at,
+                                    desc,
+                                    tags_json,
+                                    prize_str,
+                                    prize_amt,
+                                    prize_curr,
+                                    loc,
+                                    status,
+                                    raw_str,
+                                    now_iso,
+                                    now_iso,
+                                    now_iso,
+                                    inactive_since,
+                                    missing_count,
+                                ),
+                            )
+                            added_count += 1
 
-            record_refresh_log(
-                source=src_name,
-                status="success",
-                discovered_count=len(items),
-                updated_count=updated_count,
-                error_message=None,
-                db_path=db_path,
-            )
+                    # Conservative missing-observation policy:
+                    # Existing items from this source not returned in this successful run
+                    existing_source_items = conn.execute(
+                        "SELECT id, status, reg_ends_at, ends_at, inactive_since, missing_count FROM hackathons WHERE LOWER(source) = LOWER(?)",
+                        (src_name,),
+                    ).fetchall()
 
-            summary_report["sources"][src_name] = {
-                "status": "success",
-                "discovered": len(items),
-                "added": added_count,
-                "updated": updated_count,
-                "error": None,
-            }
-            summary_report["total_discovered"] += len(items)
-            summary_report["total_added"] += added_count
-            summary_report["total_updated"] += updated_count
+                    for row in existing_source_items:
+                        r_id = row["id"]
+                        if r_id not in discovered_ids:
+                            new_missing = (row["missing_count"] or 0) + 1
+                            curr_status = row["status"]
+                            dt_reg_ends = parse_event_datetime(row["reg_ends_at"])
+                            dt_ends = parse_event_datetime(row["ends_at"])
 
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(f"Refresh failed for source {src_name}: {err_msg}")
-            # Record failure in refresh_logs; preserve last known good data
-            record_refresh_log(
-                source=src_name,
-                status="failure",
-                discovered_count=0,
-                updated_count=0,
-                error_message=err_msg,
-                db_path=db_path,
-            )
-            summary_report["sources"][src_name] = {
-                "status": "failure",
-                "discovered": 0,
-                "added": 0,
-                "updated": 0,
-                "error": err_msg,
-            }
+                            # Declare inactive if repeated missing observation OR deadline passed
+                            is_now_inactive = False
+                            if (dt_reg_ends and dt_reg_ends <= now) or (dt_ends and dt_ends <= now):
+                                is_now_inactive = True
+                            elif new_missing >= MISSING_OBSERVATION_THRESHOLD:
+                                is_now_inactive = True
 
-    conn.close()
+                            if is_now_inactive and curr_status not in ["ended", "closed"]:
+                                new_status = "ended"
+                                inact_since = row["inactive_since"] or now_iso
+                            else:
+                                new_status = curr_status
+                                inact_since = row["inactive_since"]
 
-    # Step 5: Execute 30-day retention purge on confirmed inactive records
-    purged = purge_expired_hackathons(db_path=db_path, retention_days=retention_days, now=now)
-    summary_report["total_purged"] = purged
+                            conn.execute(
+                                "UPDATE hackathons SET missing_count = ?, status = ?, inactive_since = ?, updated_at = ? WHERE id = ?",
+                                (new_missing, new_status, inact_since, now_iso, r_id),
+                            )
 
-    return summary_report
+                record_refresh_log(
+                    source=src_name,
+                    status="success",
+                    discovered_count=len(items),
+                    added_count=added_count,
+                    updated_count=updated_count,
+                    error_message=None,
+                    attempted_at=now,
+                    successful_at=now,
+                    db_path=db_path,
+                )
+
+                summary_report["sources"][src_name] = {
+                    "status": "success",
+                    "discovered": len(items),
+                    "added": added_count,
+                    "updated": updated_count,
+                    "error": None,
+                }
+                summary_report["total_discovered"] += len(items)
+                summary_report["total_added"] += added_count
+                summary_report["total_updated"] += updated_count
+
+            except Exception as e:
+                err_msg = str(e)
+                logger.error(f"Refresh failed for source {src_name}: {err_msg}")
+                clean_err = sanitize_error_message(err_msg)
+                # Record failure in refresh_logs; preserve last known good data and timestamps
+                record_refresh_log(
+                    source=src_name,
+                    status="failure",
+                    discovered_count=0,
+                    added_count=0,
+                    updated_count=0,
+                    error_message=clean_err,
+                    attempted_at=now,
+                    successful_at=None,
+                    db_path=db_path,
+                )
+                summary_report["sources"][src_name] = {
+                    "status": "failure",
+                    "discovered": 0,
+                    "added": 0,
+                    "updated": 0,
+                    "error": clean_err,
+                }
+
+        conn.close()
+
+        # Step 5: Execute 30-day retention purge on confirmed inactive records
+        purged = purge_expired_hackathons(db_path=db_path, retention_days=retention_days, now=now)
+        summary_report["total_purged"] = purged
+
+        # Step 6: Determine overall refresh status
+        succeeded_sources = [s for s, r in summary_report["sources"].items() if r.get("status") == "success"]
+        failed_sources = [s for s, r in summary_report["sources"].items() if r.get("status") == "failure"]
+
+        if len(failed_sources) == 0 and len(succeeded_sources) > 0:
+            summary_report["overall_status"] = "success"
+        elif len(succeeded_sources) > 0 and len(failed_sources) > 0:
+            summary_report["overall_status"] = "partial"
+        else:
+            summary_report["overall_status"] = "failure"
+
+        return summary_report
+    finally:
+        _REFRESH_LOCK.release()

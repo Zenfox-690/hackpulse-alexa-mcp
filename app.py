@@ -4,8 +4,10 @@ and the Centre-Stage Alexa+ Multimodal Web Canvas.
 """
 
 from contextlib import asynccontextmanager
+import os
 from pathlib import Path
-from typing import Any, Dict
+import secrets
+from typing import Any, Dict, Optional
 from fastapi import FastAPI, Header, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -76,14 +78,39 @@ def serve_index():
     return {"message": "HackPulse Alexa+ Backend Online. (static/index.html not found)"}
 
 
+def verify_refresh_token(authorization: Optional[str]) -> bool:
+    """Securely verifies the Bearer refresh token against CATALOG_REFRESH_TOKEN env var.
+    Fails closed if the token is unconfigured, missing, or mismatched.
+    Uses constant-time comparison to prevent timing attacks.
+    """
+    expected = os.environ.get("CATALOG_REFRESH_TOKEN", "").strip()
+    if not expected:
+        # Fail closed: No token configured on server
+        return False
+
+    if not authorization:
+        return False
+
+    parts = authorization.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return False
+
+    provided = parts[1].strip()
+    if not provided:
+        return False
+
+    return secrets.compare_digest(provided, expected)
+
+
 @app.get("/health")
 def healthcheck():
-    from core.database import get_refresh_status
+    from core.database import get_catalog_freshness, get_refresh_status
     conn = get_db_connection()
     count = conn.execute("SELECT COUNT(*) AS c FROM hackathons").fetchone()["c"]
     audits = conn.execute("SELECT COUNT(*) AS c FROM rule_audits").fetchone()["c"]
     conn.close()
 
+    freshness = get_catalog_freshness()
     return {
         "status": "healthy",
         "service": SERVER_INFO["name"],
@@ -91,23 +118,67 @@ def healthcheck():
         "mcp_protocol_version": PROTOCOL_VERSION,
         "total_hackathons": count,
         "total_rule_audits": audits,
+        "catalog_freshness": {
+            "is_fresh": freshness.get("is_fresh", False),
+            "overall_status": freshness.get("overall_status", "unknown"),
+            "fresh_sources": freshness.get("fresh_sources", []),
+            "stale_sources": freshness.get("stale_sources", []),
+        },
         "refresh_status": get_refresh_status(),
     }
 
 
 @app.get("/sync/status")
 def sync_status():
-    """Returns operational refresh timestamps and per-source status."""
-    from core.database import get_refresh_status
-    return {"status": "ok", "refresh_logs": get_refresh_status()}
+    """Returns operational refresh timestamps, per-source status, and freshness evaluation."""
+    from core.database import get_catalog_freshness, get_refresh_status
+    return {
+        "status": "ok",
+        "freshness": get_catalog_freshness(),
+        "refresh_logs": get_refresh_status(),
+    }
+
+
+@app.get("/catalog/freshness")
+def catalog_freshness(threshold_hours: int = 24):
+    """Evaluates catalog freshness and source-level health against a configurable threshold."""
+    from core.database import get_catalog_freshness
+    return get_catalog_freshness(threshold_hours=threshold_hours)
 
 
 @app.post("/sync/refresh")
-def sync_refresh(retention_days: int = 30):
-    """Triggers autonomous multi-source discovery, status refresh, and rolling 30-day retention purge."""
-    from core.ingestion import refresh_discovery_sources
-    res = refresh_discovery_sources(retention_days=retention_days)
-    return {"status": "ok", "refresh_summary": res}
+def sync_refresh(
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+    retention_days: int = 30,
+):
+    """Triggers authenticated multi-source discovery, status refresh, and rolling 30-day retention purge."""
+    if not verify_refresh_token(authorization):
+        return JSONResponse(
+            status_code=401,
+            content={
+                "status": "unauthorized",
+                "error": "Unauthorized",
+                "detail": "Invalid or missing catalog refresh token",
+            },
+        )
+
+    try:
+        from core.ingestion import ConcurrencyError, refresh_discovery_sources
+        res = refresh_discovery_sources(retention_days=retention_days)
+        return {
+            "status": "ok",
+            "overall_status": res.get("overall_status", "unknown"),
+            "refresh_summary": res,
+        }
+    except ConcurrencyError as ce:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "status": "conflict",
+                "error": "Conflict",
+                "detail": str(ce),
+            },
+        )
 
 
 @app.get("/mcp")
